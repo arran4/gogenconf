@@ -1,4 +1,5 @@
-// Package codegen turns a validated schema into static Go types and binders.
+// Package codegen turns a validated schema into static Go types and binders,
+// and generates application-owned, dependency-free native configuration runtimes.
 // It has no knowledge of application-specific fields or packages.
 package codegen
 
