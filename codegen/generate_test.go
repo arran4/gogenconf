@@ -37,6 +37,46 @@ func TestFixtureIsCurrentAndDeterministic(t *testing.T) {
 	if strings.Contains(string(first), "reflect.") {
 		t.Fatal("runtime reflection in generated binding")
 	}
+	for _, forbidden := range []string{"legacy_location", "Snapshot(", "SetLiteral("} {
+		if strings.Contains(string(first), forbidden) {
+			t.Fatalf("unexpected generated runtime surface %s", forbidden)
+		}
+	}
+}
+
+func TestSeparateModelAndBinder(t *testing.T) {
+	s := testschema.Definition()
+	model, err := codegen.GenerateModel(s, codegen.Options{Package: "appconfig", ModelImport: "example/model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binder, err := codegen.GenerateBinder(s, codegen.Options{Package: "binding", ModelImport: "example/model", RuntimeImport: "example/appconfig"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"type Config struct", "configmodel.Provider[[]byte]", "Key     []byte"} {
+		if !strings.Contains(string(model), want) {
+			t.Fatalf("model missing %s", want)
+		}
+	}
+	for _, bad := range []string{"Resolve(", "reflect.", "type Config =", "legacy_location"} {
+		if strings.Contains(string(model), bad) {
+			t.Fatalf("bad model surface %s", bad)
+		}
+	}
+	for _, want := range []string{"runtimeconfig.Config", "ResolveField[[]byte]", "FieldProvider[[]byte]", `"service", "content"`} {
+		if !strings.Contains(string(binder), want) {
+			t.Fatalf("binder missing %s", want)
+		}
+	}
+	for _, bad := range []string{"type Config", "legacy_location", "Snapshot("} {
+		if strings.Contains(string(binder), bad) {
+			t.Fatalf("bad binder surface %s", bad)
+		}
+	}
+	if _, err := codegen.GenerateBinder(s, codegen.Options{Package: "binding", ModelImport: "model"}); err == nil {
+		t.Fatal("binder accepted missing runtime import")
+	}
 }
 
 func TestInvalidMappingsFailBeforeOutput(t *testing.T) {
@@ -51,6 +91,9 @@ func TestInvalidMappingsFailBeforeOutput(t *testing.T) {
 		{"duplicate section", func(s *m.Schema) { s.Sections = append(s.Sections, s.Sections[0]) }},
 		{"policy", func(s *m.Schema) { s.Sections[0].Fields[1].Policy = "cache" }},
 		{"unexported", func(s *m.Schema) { s.Sections[0].Fields[1].GoName = "key" }},
+		{"input-only runtime mapping", func(s *m.Schema) { s.Sections[0].Fields[3].GoName = "Legacy" }},
+		{"input-only duplicate", func(s *m.Schema) { s.Sections[0].Fields[3].Key = "label" }},
+		{"nil example", func(s *m.Schema) { s.Sections[0].Fields[0].Examples = []m.Expr{nil} }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

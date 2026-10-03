@@ -79,21 +79,3 @@ func Resolve(ctx context.Context, d *configmodel.Document, r *configmodel.Regist
 	}
 	return c, nil
 }
-func Snapshot(c Config) *configmodel.Document {
-	d := &configmodel.Document{Version: 2, HasVersion: true}
-	{
-		s := &configmodel.Section{Name: "service"}
-		s.Set("label", configmodel.Literal{Value: c.Service.Label})
-		d.AddSection(s)
-	}
-	return d
-}
-func SetLiteral(c *Config, key, value string) error {
-	switch key {
-	case "service.label":
-		c.Service.Label = value
-	default:
-		return fmt.Errorf("unknown configuration key %q", key)
-	}
-	return nil
-}

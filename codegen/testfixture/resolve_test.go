@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	m "github.com/arran4/address/internal/configmodel"
+	"github.com/arran4/address/internal/configmodel/codegen/testschema"
 )
 
 func TestGeneratedTypesBindEagerKeysAndDeferredContent(t *testing.T) {
@@ -57,6 +58,32 @@ func TestGeneratedTypesBindEagerKeysAndDeferredContent(t *testing.T) {
 	got, err = content.Resolve(context.Background())
 	if err != nil || string(got) != "second" {
 		t.Fatalf("reload = %q, %v", got, err)
+	}
+}
+
+func TestInputOnlyFieldCanMigrateWithoutRuntimeTarget(t *testing.T) {
+	d, err := m.Parse(strings.NewReader("config_version 1\nsection service\n legacy_location from_env(UNREAD_LOCATION)\nend\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, ok := testschema.Definition().Field("service", "legacy_location")
+	if !ok || !f.InputOnly {
+		t.Fatal("input-only metadata absent")
+	}
+	migrations := m.NewMigrations()
+	if err := migrations.Register(1, func(d *m.Document) error {
+		s := d.Section("service")
+		s.Set("content", m.Call{Name: "from_file", Args: []m.Expr{m.CloneExpr(d.Value("service", "legacy_location"))}})
+		s.Delete("legacy_location")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrations.Apply(d, 2); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.FormatExpr(d.Value("service", "content")); got != "from_file(from_env(UNREAD_LOCATION))" {
+		t.Fatal(got)
 	}
 }
 

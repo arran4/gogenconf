@@ -9,6 +9,7 @@ func Definition() m.Schema {
 			{Key: "label", GoName: "Label", GoType: "string", Default: m.Literal{Value: "default"}, Environment: "FIXTURE_LABEL", Required: true},
 			{Key: "key", GoName: "Key", GoType: "[]byte", Required: true, Sensitive: true},
 			{Key: "content", GoName: "Content", GoType: "[]byte", Required: true, Policy: m.ProviderBacked},
+			{Key: "legacy_location", InputOnly: true, Deprecated: true},
 		}},
 	}}
 }

@@ -15,11 +15,16 @@ const (
 // Field describes content and static Go mapping. RuntimeOnly fields belong to
 // the generated struct but cannot be configured through the document.
 type Field struct {
-	Key, GoName, GoType                          string
-	Default                                      Expr
+	Key, GoName, GoType string
+	Default             Expr
+	// Examples are documentation only: never defaults or runtime inputs.
+	Examples                                     []Expr
 	Documentation                                []string
 	Required, Sensitive, RuntimeOnly, Deprecated bool
-	Policy                                       ResolutionPolicy
+	// InputOnly fields are accepted persisted inputs for compatibility/migration,
+	// not members of the generated runtime model or ordinary binding targets.
+	InputOnly bool
+	Policy    ResolutionPolicy
 	// Environment is a compatibility fallback below an explicit document value.
 	Environment         string
 	EnvironmentNonEmpty bool
@@ -30,7 +35,75 @@ type SectionDefinition struct {
 	Fields               []Field
 	// Repeated sections use "Name instance", generating a slice and Name field.
 	Repeated bool
+	// ExampleNames illustrate repeated sections without creating runtime defaults.
+	ExampleNames []string
 }
+
+// Sample renders defaults as active entries and examples as managed comments.
+// Unlike Seed it also illustrates optional fields and repeated sections, but
+// does not activate their examples. All content comes from schema metadata.
+func (s Schema) Sample() *Document {
+	d := &Document{Version: s.Version, HasVersion: true, Items: []Item{Version{}, Blank{},
+		Comment{Kind: UserComment, Text: "Single # comments belong to you; ## documentation is schema-managed."},
+		Comment{Kind: DocumentationComment, Text: "Examples below are comments, not active values or defaults."}, Blank{}}}
+	for _, def := range s.Sections {
+		names := []string{def.Name}
+		if def.Repeated {
+			names = nil
+			for _, name := range def.ExampleNames {
+				names = append(names, def.Name+" "+name)
+			}
+		}
+		for _, name := range names {
+			section := &Section{Name: name}
+			for _, text := range def.Documentation {
+				section.Items = append(section.Items, Comment{Kind: DocumentationComment, Text: text})
+			}
+			section.Items = append(section.Items, Blank{})
+			for _, f := range def.Fields {
+				if f.RuntimeOnly || f.InputOnly || f.Deprecated {
+					continue
+				}
+				for _, text := range f.Documentation {
+					section.Items = append(section.Items, Comment{Kind: DocumentationComment, Text: text})
+				}
+				if len(f.Examples) > 0 {
+					section.Items = append(section.Items, Comment{Kind: DocumentationComment, Text: "Examples (inactive):"})
+					for _, e := range f.Examples {
+						section.Items = append(section.Items, Comment{Kind: DocumentationComment, Text: "  " + f.Key + " " + FormatExpr(e)})
+					}
+				}
+				if f.Default != nil {
+					section.Set(f.Key, CloneExpr(f.Default))
+				}
+				section.Items = append(section.Items, Blank{})
+			}
+			if def.Repeated {
+				// Comment the entire repeated section: examples must not create
+				// an empty provider/config instance just by running the sample.
+				tmp := &Document{}
+				tmp.AddSection(section)
+				for _, line := range strings.Split(strings.TrimSuffix(Format(tmp), "\n"), "\n") {
+					text := ""
+					if line != "" {
+						text = "  " + line
+					}
+					d.Items = append(d.Items, Comment{Kind: DocumentationComment, Text: text})
+				}
+			} else {
+				d.AddSection(section)
+			}
+			d.Items = append(d.Items, Blank{})
+		}
+	}
+	if len(d.Items) > 0 {
+		if _, ok := d.Items[len(d.Items)-1].(Blank); ok {
+			d.Items = d.Items[:len(d.Items)-1]
+		}
+	}
+	return d
+}
+
 type Schema struct {
 	Version  int
 	Sections []SectionDefinition
@@ -110,7 +183,7 @@ func (s Schema) Enrich(d *Document) error {
 				section.Items = append(prefix, section.Items...)
 			}
 			for _, f := range def.Fields {
-				if f.RuntimeOnly || f.Deprecated {
+				if f.RuntimeOnly || f.InputOnly || f.Deprecated {
 					continue
 				}
 				if _, idx, exists := section.Entry(f.Key); exists {
