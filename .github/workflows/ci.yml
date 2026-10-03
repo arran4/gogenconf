@@ -1,0 +1,145 @@
+name: CI/CD
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Pipeline mode (releases must run on main)
+        type: choice
+        default: build
+        options: [build, release-major, release-minor, release-patch, release-test, release-rc, release-alpha, publish-tag]
+      release_version_override:
+        description: Optional version, or existing same-commit tag for recovery
+        type: string
+        default: ''
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate dispatch context
+        env:
+          EVENT: ${{ github.event_name }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          if [[ "$EVENT" == workflow_dispatch ]]; then
+            if [[ "$MODE" == publish-tag && "$GITHUB_REF" != refs/tags/v* ]]; then exit 1; fi
+            if [[ "$MODE" == release-* && "$GITHUB_REF" != refs/heads/main ]]; then exit 1; fi
+          fi
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: test -z "$(gofmt -l .)"
+      - run: go generate ./...
+      - run: go vet ./...
+      - run: go test -count=1 ./...
+      - run: go test -race ./...
+      - run: go build ./cmd/gogenconf
+      - run: go mod tidy
+      - run: git diff --exit-code && test -z "$(git status --porcelain)"
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.14.0
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          version: v2.18.2
+          args: check
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: peaceiris/actions-hugo@v3
+        with:
+          hugo-version: '0.167.0'
+      - run: hugo --source docs --minify
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: docs/public
+  pages:
+    needs: [quality, docs]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - uses: actions/deploy-pages@v5
+        id: deploy
+  release-tag:
+    needs: [quality, docs]
+    if: github.event_name == 'workflow_dispatch' && startsWith(inputs.mode, 'release-')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: arran4/git-tag-inc-action@v1
+        with:
+          mode: install
+      - name: Select validated tag and dispatch publisher
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ inputs.mode }}
+          OVERRIDE: ${{ inputs.release_version_override }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main ]] || { echo 'Release dispatch requires main'; exit 1; }
+          git fetch origin main --tags
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          if [[ -n "$OVERRIDE" ]]; then
+            tag="v${OVERRIDE#v}"
+          else
+            case "$MODE" in
+              release-major) args=(major);;
+              release-minor) args=(minor);;
+              release-patch) args=(patch);;
+              release-test) args=(patch test);;
+              release-rc) args=(patch rc);;
+              release-alpha) args=(patch alpha);;
+              *) exit 1;;
+            esac
+            tag=$(git-tag-inc -print-version-only "${args[@]}")
+          fi
+          bash scripts/release-tag.sh "$tag" "$GITHUB_SHA"
+          # GITHUB_TOKEN pushes do not trigger a second push workflow.
+          gh workflow run ci.yml --ref "$tag" -f mode=publish-tag
+  publish:
+    needs: [quality, docs]
+    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'publish-tag'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: publish-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          version: v2.18.2
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

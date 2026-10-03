@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{ .Title }} · gogenconf</title>
+<style>
+body{margin:0;color:#202b38;background:#fff;font:17px/1.65 system-ui,sans-serif}nav{padding:2rem;background:#eef3f6}nav a{display:block;margin:.35rem 0}a{color:#175b90}main{padding:2rem;max-width:900px;min-width:0}pre{overflow:auto;padding:1rem;background:#f3f6f8}code{font-size:.88em}table{border-collapse:collapse;width:100%;display:block;overflow:auto}td,th{border:1px solid #ccd6df;padding:.5rem;text-align:left}h1,h2,h3{line-height:1.25;scroll-margin-top:1rem}footer{border-top:1px solid #ddd;margin-top:3rem;padding-top:1rem;font-size:.85rem}@media(min-width:900px){body{display:grid;grid-template-columns:270px 1fr}nav{position:sticky;top:0;height:100vh;box-sizing:border-box;overflow:auto}}
+</style></head>
+<body><nav aria-label="Documentation"><strong>gogenconf</strong><a href="{{ .Site.Home.RelPermalink }}">Complete manual</a>{{ range .Site.RegularPages.ByWeight }}<a href="{{ .RelPermalink }}">{{ .Title }}</a>{{ end }}<hr><a href="https://github.com/arran4/gogenconf">Source / README</a><a href="https://pkg.go.dev/github.com/arran4/gogenconf">Go API</a></nav>
+<main>{{ block "main" . }}{{ end }}<footer>Generated from the primary README manual. Pre-v1 API. GPL-3.0-only.</footer></main></body></html>
