@@ -1,10 +1,10 @@
-package configmodel_test
+package gogenconf_test
 
 import (
 	"context"
 	"testing"
 
-	m "github.com/arran4/address/internal/configmodel"
+	m "github.com/arran4/gogenconf"
 )
 
 func TestCustomResolverIsNotImplicitlyDisplaySafe(t *testing.T) {

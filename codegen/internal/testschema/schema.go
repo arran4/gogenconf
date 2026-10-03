@@ -1,7 +1,7 @@
-// Package testschema provides a small non-Address schema for generator fixtures.
+// Package testschema provides a small neutral schema for generator fixtures.
 package testschema
 
-import m "github.com/arran4/address/internal/configmodel"
+import m "github.com/arran4/gogenconf"
 
 func Definition() m.Schema {
 	return m.Schema{Version: 2, Sections: []m.SectionDefinition{

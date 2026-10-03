@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	m "github.com/arran4/address/internal/configmodel"
+	m "github.com/arran4/gogenconf"
 )
 
 func ExampleResolve_provider() {

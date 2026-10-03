@@ -6,14 +6,14 @@ import (
 	"strings"
 	"testing"
 
-	m "github.com/arran4/address/internal/configmodel"
-	"github.com/arran4/address/internal/configmodel/codegen"
-	"github.com/arran4/address/internal/configmodel/codegen/testschema"
+	m "github.com/arran4/gogenconf"
+	"github.com/arran4/gogenconf/codegen"
+	"github.com/arran4/gogenconf/codegen/internal/testschema"
 )
 
 func TestFixtureIsCurrentAndDeterministic(t *testing.T) {
 	s := testschema.Definition()
-	options := codegen.Options{Package: "testfixture", ModelImport: "github.com/arran4/address/internal/configmodel"}
+	options := codegen.Options{Package: "testfixture", LibraryImport: "github.com/arran4/gogenconf"}
 	first, err := codegen.Generate(s, options)
 	if err != nil {
 		t.Fatal(err)
@@ -22,14 +22,14 @@ func TestFixtureIsCurrentAndDeterministic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := os.ReadFile("testfixture/config_generated.go")
+	want, err := os.ReadFile("internal/testfixture/config_generated.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(first, second) || !bytes.Equal(first, want) {
 		t.Fatal("generated fixture is stale or nondeterministic")
 	}
-	for _, fragment := range []string{"// Code generated", "DO NOT EDIT.", "Key     []byte", "configmodel.Provider[[]byte]", "ResolveField[[]byte]", `"service", "key"`} {
+	for _, fragment := range []string{"// Code generated", "DO NOT EDIT.", "Key     []byte", "gogenconf.Provider[[]byte]", "ResolveField[[]byte]", `"service", "key"`} {
 		if !strings.Contains(string(first), fragment) {
 			t.Errorf("missing %q", fragment)
 		}
@@ -46,15 +46,15 @@ func TestFixtureIsCurrentAndDeterministic(t *testing.T) {
 
 func TestSeparateModelAndBinder(t *testing.T) {
 	s := testschema.Definition()
-	model, err := codegen.GenerateModel(s, codegen.Options{Package: "appconfig", ModelImport: "example/model"})
+	model, err := codegen.GenerateModel(s, codegen.Options{Package: "appconfig", LibraryImport: "example/model"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	binder, err := codegen.GenerateBinder(s, codegen.Options{Package: "binding", ModelImport: "example/model", RuntimeImport: "example/appconfig"})
+	binder, err := codegen.GenerateBinder(s, codegen.Options{Package: "binding", LibraryImport: "example/model", ConfigImport: "example/appconfig"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"type Config struct", "configmodel.Provider[[]byte]", "Key     []byte"} {
+	for _, want := range []string{"type Config struct", "gogenconf.Provider[[]byte]", "Key     []byte"} {
 		if !strings.Contains(string(model), want) {
 			t.Fatalf("model missing %s", want)
 		}
@@ -74,7 +74,7 @@ func TestSeparateModelAndBinder(t *testing.T) {
 			t.Fatalf("bad binder surface %s", bad)
 		}
 	}
-	if _, err := codegen.GenerateBinder(s, codegen.Options{Package: "binding", ModelImport: "model"}); err == nil {
+	if _, err := codegen.GenerateBinder(s, codegen.Options{Package: "binding", LibraryImport: "model"}); err == nil {
 		t.Fatal("binder accepted missing runtime import")
 	}
 }
@@ -99,11 +99,11 @@ func TestInvalidMappingsFailBeforeOutput(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := testschema.Definition()
 			tc.mutate(&s)
-			out, err := codegen.Generate(s, codegen.Options{Package: "test", ModelImport: "model"})
+			out, err := codegen.Generate(s, codegen.Options{Package: "test", LibraryImport: "model"})
 			if err == nil || len(out) > 0 {
 				t.Fatal("invalid mapping emitted output")
 			}
-			_, again := codegen.Generate(s, codegen.Options{Package: "test", ModelImport: "model"})
+			_, again := codegen.Generate(s, codegen.Options{Package: "test", LibraryImport: "model"})
 			if again.Error() != err.Error() {
 				t.Fatal("nondeterministic error")
 			}

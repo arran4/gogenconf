@@ -1,4 +1,4 @@
-package configmodel
+package gogenconf
 
 import (
 	"bufio"

@@ -1,4 +1,4 @@
-package configmodel
+package gogenconf
 
 // DisplayPolicy declares which call arguments identify sources rather than
 // contain content. Unknown declarers fail closed. This is independent of typed

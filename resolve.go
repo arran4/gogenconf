@@ -1,4 +1,4 @@
-package configmodel
+package gogenconf
 
 import (
 	"context"
@@ -226,7 +226,7 @@ func NewStandardRegistry() (*Registry, error) {
 	}); err != nil {
 		return nil, err
 	}
-	// Kept solely as a compatibility alias for legacy Address documents. New
+	// Kept solely as a compatibility alias for legacy documents. New
 	// documents use the composable spelling from_file(from_env(NAME)).
 	for _, result := range []any{"", []byte(nil)} {
 		result := result

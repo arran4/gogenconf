@@ -1,5 +1,5 @@
-// Package configmodel contains the reusable, unresolved configuration model.
-package configmodel
+// Package gogenconf contains the reusable, unresolved configuration model.
+package gogenconf
 
 import (
 	"fmt"

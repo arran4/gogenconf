@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	m "github.com/arran4/address/internal/configmodel"
-	"github.com/arran4/address/internal/configmodel/codegen/testschema"
+	m "github.com/arran4/gogenconf"
+	"github.com/arran4/gogenconf/codegen/internal/testschema"
 )
 
 func TestGeneratedTypesBindEagerKeysAndDeferredContent(t *testing.T) {

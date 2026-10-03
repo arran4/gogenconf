@@ -1,10 +1,10 @@
-package configmodel_test
+package gogenconf_test
 
 import (
 	"strings"
 	"testing"
 
-	m "github.com/arran4/address/internal/configmodel"
+	m "github.com/arran4/gogenconf"
 )
 
 func TestCommentOwnershipFollowsWholeDocumentVersion(t *testing.T) {

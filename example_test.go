@@ -1,4 +1,4 @@
-package configmodel_test
+package gogenconf_test
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	m "github.com/arran4/address/internal/configmodel"
+	m "github.com/arran4/gogenconf"
 )
 
 func ExampleParseExpr() {
@@ -31,7 +31,7 @@ func ExampleParseExpr() {
 }
 
 func ExampleResolve() {
-	f, err := os.CreateTemp("", "configmodel-example-*")
+	f, err := os.CreateTemp("", "gogenconf-example-*")
 	if err != nil {
 		panic(err)
 	}

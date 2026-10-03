@@ -1,4 +1,4 @@
-package configmodel
+package gogenconf
 
 // CommentKind records ownership rather than inferring it from prose.
 type CommentKind uint8
