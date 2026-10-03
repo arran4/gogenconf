@@ -1,3 +1,10 @@
+---
+title: "gogenconf Manual"
+weight: 0
+---
+
+<!-- Generated from README.md by internal/docgen. DO NOT EDIT. -->
+
 # gogenconf
 
 A versioned declarative configuration format and schema system with generated
@@ -54,7 +61,7 @@ printf 'config_version 1\nsection service\n endpoint https://example.test\nend\n
   go run ./cmd/gogenconf format
 ```
 
-The [complete codegen application](examples/codegen) includes a Go schema, local
+The [complete codegen application](https://github.com/arran4/gogenconf/blob/main/examples/codegen) includes a Go schema, local
 generator, concrete model, separate binder, and loading code. It creates a
 disposable credential file, places its path in `CREDENTIAL_FILE`, and loads the
 neutral configuration below. Provision real sources separately; never print
@@ -85,7 +92,7 @@ doc, err := gogenconf.Parse(strings.NewReader(input))
 if err != nil { return err }
 registry, err := gogenconf.NewStandardRegistry()
 if err != nil { return err }
-credential, err := gogenconf.Resolve[[]byte](
+credential, err := gogenconf.Resolve[[]byte](https://github.com/arran4/gogenconf/blob/main/
     ctx, registry, doc.Value("service", "credential"),
 )
 if err != nil { return err }
@@ -93,7 +100,7 @@ if err != nil { return err }
 ```
 
 Resolution is explicit and selected by **declarer name + requested Go type**.
-`Resolve[string](ctx, registry, expr)` and `Resolve[[]byte](ctx, registry, expr)`
+`Resolve[string](https://github.com/arran4/gogenconf/blob/main/ctx, registry, expr)` and `Resolve[[]byte](https://github.com/arran4/gogenconf/blob/main/ctx, registry, expr)`
 can consume the same `from_file(...)` expression. Both preserve exact content,
 including NUL, whitespace, and newlines; there is no implicit trimming.
 
@@ -102,7 +109,7 @@ The standard registry supplies literals, `from_env`, `from_file`,
 alias. Missing environment variables differ from present-empty values. Registries
 are caller-owned; applications register additional typed services without changing
 the parser. No shell evaluation, scripting, network service, or mutable global
-registry is required. See the [executable language examples](example_test.go).
+registry is required. See the [executable language examples](https://github.com/arran4/gogenconf/blob/main/example_test.go).
 
 ## Native language reference
 
@@ -180,7 +187,7 @@ generation uses an application-local driver, not runtime schema/plugin loading.
 
 For example, put `//go:generate go run ./internal/generate` in your application
 package. That driver imports your Go schema and `gogenconf/codegen`, checks errors,
-and writes model/binder files. The [runnable driver](examples/codegen/internal/generate/main.go)
+and writes model/binder files. The [runnable driver](https://github.com/arran4/gogenconf/blob/main/examples/codegen/internal/generate/main.go)
 demonstrates this without installing a generator binary. Arbitrary Go schema
 values cannot safely be dynamically discovered by a generic CLI.
 
@@ -222,7 +229,7 @@ lost provenance and cannot be converted back through a Config-to-Document API.
 - `Schema.Enrich` adds missing fields/defaults and sections, refreshes managed
   documentation, and preserves explicit values, user comments, and unknown
   content. A changed default does not overwrite an existing override. Enrichment
-  is idempotent; the [evolution goldens](testdata/evolution) make this visible.
+  is idempotent; the [evolution goldens](https://github.com/arran4/gogenconf/blob/main/testdata/evolution) make this visible.
 - `#` is user-owned and `##` is managed documentation in versioned v1+ files.
   All unversioned/v0 comments are user-owned, even `##` or `###` headings. On
   upgrade, `## Heading` becomes `# # Heading` so a reload cannot claim it as managed.
@@ -257,7 +264,7 @@ encryption at rest. Applications must validate their domain constraints after bi
 
 ## Migration walkthrough
 
-The [migration example](examples/migration/main.go) registers `v1 → v2` and renames
+The [migration example](https://github.com/arran4/gogenconf/blob/main/examples/migration/main.go) registers `v1 → v2` and renames
 `old_endpoint` on the unresolved AST. Then enrichment adds a default and docs:
 
 ```text
@@ -301,7 +308,7 @@ Binding captures the expression without resolving it; `Resolve(ctx)` later reads
 the source, including later file changes. Document edits cannot retarget the
 captured declaration. Caching, invalidation, and content lifecycle remain outside
 the core; adapters can wrap the small interface. See the [compiled provider
-example](codegen/internal/testfixture/example_test.go).
+example](https://github.com/arran4/gogenconf/blob/main/codegen/internal/testfixture/example_test.go).
 
 For a large template or refreshable local content file, choose ProviderBacked
 on that schema field. Bind the ordinary endpoint eagerly while retaining
@@ -385,11 +392,11 @@ man gogenconf
 
 Run `go run ./examples/<name>` from this checkout; all examples are executed in CI:
 
-- [basic](examples/basic/main.go): parse, format, and explicit typed resolution.
-- [nested-sources](examples/nested-sources/main.go): env→file and exact string/bytes.
-- [migration](examples/migration/main.go): unresolved rename and enrichment preserving custom content.
-- [provider](examples/provider/main.go): deferred file content created after provider construction, then reloaded.
-- [codegen](examples/codegen): application schema, local generator, concrete Config and separate binder.
+- [basic](https://github.com/arran4/gogenconf/blob/main/examples/basic/main.go): parse, format, and explicit typed resolution.
+- [nested-sources](https://github.com/arran4/gogenconf/blob/main/examples/nested-sources/main.go): env→file and exact string/bytes.
+- [migration](https://github.com/arran4/gogenconf/blob/main/examples/migration/main.go): unresolved rename and enrichment preserving custom content.
+- [provider](https://github.com/arran4/gogenconf/blob/main/examples/provider/main.go): deferred file content created after provider construction, then reloaded.
+- [codegen](https://github.com/arran4/gogenconf/blob/main/examples/codegen): application schema, local generator, concrete Config and separate binder.
 
 The integration suite copies codegen sources (not generated output) to a temporary
 outside Go module, regenerates, compiles and executes it. A disposable local
@@ -459,10 +466,10 @@ capacity; do not make empty commits to retrigger billing failures.
 
 This pre-v1 project was extracted from the architecture proven in Address PR #52,
 merge `7ca592d9aae476169c568d0bd4ce75654a099e48`, with subtree history preserved.
-See [PROVENANCE.md](PROVENANCE.md). Application-specific schemas and policy remain
+See [PROVENANCE.md](https://github.com/arran4/gogenconf/blob/main/PROVENANCE.md). Application-specific schemas and policy remain
 outside this library. API stability is not yet promised; review migrations and
 pin tested versions. No future declarers or release artifacts are implied to exist.
 
 ## License
 
-GPL-3.0-only; see [LICENSE](LICENSE). Copyright (c) 2026 Arran Ubels.
+GPL-3.0-only; see [LICENSE](https://github.com/arran4/gogenconf/blob/main/LICENSE). Copyright (c) 2026 Arran Ubels.

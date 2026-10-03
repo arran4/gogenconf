@@ -1,0 +1,10 @@
+baseURL = 'https://arran4.github.io/gogenconf/'
+locale = 'en-US'
+title = 'gogenconf'
+disableKinds = ['taxonomy', 'term']
+
+[markup.highlight]
+style = 'github'
+
+[markup.goldmark.renderer]
+unsafe = false

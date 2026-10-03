@@ -1,0 +1,34 @@
+version: 2
+project_name: gogenconf
+builds:
+  - id: gogenconf
+    main: ./cmd/gogenconf
+    binary: gogenconf
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files: [README.md, LICENSE, PROVENANCE.md, man/man1/*]
+checksum:
+  name_template: checksums.txt
+changelog:
+  sort: asc
+release:
+  prerelease: auto
+nfpms:
+  - id: packages
+    package_name: gogenconf
+    homepage: https://github.com/arran4/gogenconf
+    maintainer: Arran Ubels <arran@ubels.org>
+    description: Versioned declarative configuration language and typed Go bindings.
+    license: GPL-3.0-only
+    formats: [deb, rpm, apk]
+    contents:
+      - src: man/man1/*
+        dst: /usr/share/man/man1/
