@@ -16,6 +16,13 @@ func Parse(r io.Reader) (*Document, error) {
 	scan := bufio.NewScanner(r)
 	scan.Buffer(make([]byte, 4096), 1024*1024)
 	var section *Section
+	// Version metadata may appear after comments. Keep ambiguous spellings
+	// privately until the whole document's ownership convention is known.
+	var legacyComments []struct {
+		items *[]Item
+		index int
+		text  string
+	}
 	lineNo := 0
 	fail := func(message string) (*Document, error) {
 		return nil, fmt.Errorf("configuration line %d: %s", lineNo, message)
@@ -37,6 +44,11 @@ func Parse(r io.Reader) (*Document, error) {
 			if strings.HasPrefix(line, "##") {
 				kind = DocumentationComment
 				prefix = "##"
+				legacyComments = append(legacyComments, struct {
+					items *[]Item
+					index int
+					text  string
+				}{items, len(*items), strings.TrimPrefix(line[1:], " ")})
 			}
 			*items = append(*items, Comment{Kind: kind, Text: strings.TrimPrefix(strings.TrimPrefix(line, prefix), " ")})
 			continue
@@ -103,6 +115,11 @@ func Parse(r io.Reader) (*Document, error) {
 	if section != nil {
 		return fail("unterminated section")
 	}
+	if !d.HasVersion || d.Version == 0 {
+		for _, c := range legacyComments {
+			(*c.items)[c.index] = Comment{Kind: UserComment, Text: c.text}
+		}
+	}
 	return d, nil
 }
 
@@ -147,7 +164,13 @@ func Format(d *Document) string {
 				}
 				fmt.Fprintf(&b, "%s%s", indent, marker)
 				if v.Text != "" {
-					b.WriteString(" " + v.Text)
+					if v.Kind == UserComment && (!d.HasVersion || d.Version == 0) && strings.HasPrefix(v.Text, "#") {
+						// Retain legacy heading spelling. In v1 the separating
+						// space is mandatory to retain user ownership on reload.
+						b.WriteString(v.Text)
+					} else {
+						b.WriteString(" " + v.Text)
+					}
 				}
 				b.WriteByte('\n')
 			case Blank:

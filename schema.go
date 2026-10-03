@@ -22,7 +22,7 @@ type Field struct {
 	Documentation                                []string
 	Required, Sensitive, RuntimeOnly, Deprecated bool
 	// InputOnly fields are accepted persisted inputs for compatibility/migration,
-	// not members of the generated runtime model or ordinary binding targets.
+	// not writable editing targets, runtime members, or ordinary binding targets.
 	InputOnly bool
 	Policy    ResolutionPolicy
 	// Environment is a compatibility fallback below an explicit document value.
@@ -219,6 +219,9 @@ func (s Schema) CheckVersion(d *Document) error {
 	}
 	return nil
 }
+
+// Field looks up accepted persisted input, including InputOnly compatibility
+// fields. Readers, migrations, inspection, and removal may use this lookup.
 func (s Schema) Field(section, key string) (Field, bool) {
 	for _, sec := range s.Sections {
 		if sec.Name == section || sec.Repeated && strings.HasPrefix(section, sec.Name+" ") {
@@ -230,4 +233,11 @@ func (s Schema) Field(section, key string) (Field, bool) {
 		}
 	}
 	return Field{}, false
+}
+
+// WritableField identifies ordinary editing targets. InputOnly fields remain
+// readable but cannot be introduced or replaced by current-schema editors.
+func (s Schema) WritableField(section, key string) (Field, bool) {
+	f, ok := s.Field(section, key)
+	return f, ok && !f.InputOnly
 }
