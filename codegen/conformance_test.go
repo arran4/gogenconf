@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	gogenconf "github.com/arran4/gogenconf"
-	rf "github.com/arran4/gogenconf/codegen/internal/runtimefixture"
+	rf "github.com/arran4/gogenconf/internal/nativeconfig"
 )
 
 func TestConformanceExpressions(t *testing.T) {

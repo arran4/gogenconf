@@ -247,9 +247,13 @@ This emits:
 
 The generated code depends solely on the Go standard library (`bufio`, `fmt`, `io`, `strconv`, `strings`, `unicode`). It contains no imports of, aliases to, or runtime forwarding back to `github.com/arran4/gogenconf`.
 
+#### Production dogfooding
+
+The shipped `gogenconf` syntax CLI now generates and checks in `internal/nativeconfig` through the repository-local `internal/runtimegen` driver. `format`, `validate`, `expr format`, and `expr validate` use that generated runtime in production. The root `gogenconf` parser and formatter remain the canonical public implementation and the differential-conformance oracle; they are not a normal fallback for the CLI syntax path. This demonstrates the dependency-free native parsing boundary from #5, while complete generated-binder dependency removal remains #6 and generator/product parity follow-up remains #12/#19.
+
 #### Roadmap to build-time-only generation (#4)
 
-- **#5 (this PR)**: Generate application-owned native config runtime instead of importing gogenconf.
+- **#5**: Generate an application-owned native config runtime instead of importing gogenconf; the project CLI dogfoods it for syntax tooling.
 - **#6**: Generate static resolver and declarer code for dependency-free binders.
 - **#7**: Generate application-owned provider support and emit only schema-required runtime features.
 - **#8**: Add a first-class `gogenconf generate` command and canonical project generation contract.
