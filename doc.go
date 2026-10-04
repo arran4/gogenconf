@@ -26,6 +26,6 @@
 // nested sections and malformed delimiters fail rather than being discarded.
 //
 // Registry uses Go result types only for service dispatch, never reflection to
-// populate application structures. codegen emits those structures and their
-// explicit typed resolution calls.
+// populate application structures. codegen emits those structures, explicit
+// typed resolution calls, and application-owned dependency-free native runtimes.
 package gogenconf

@@ -221,6 +221,48 @@ config file → Document / Expr → Schema + migrations + enrichment
 This flow is one-way. Edit and persist the original Document; resolved values have
 lost provenance and cannot be converted back through a Config-to-Document API.
 
+### Generation architecture and dependency-free runtime
+
+gogenconf is transitioning to a build-time-only generator where generated application code has **zero runtime dependencies** on gogenconf (issue #4).
+
+#### Current generation boundary
+
+- `codegen.GenerateModel`: Emits application-owned concrete Go structs (`Config`, etc.).
+- `codegen.GenerateBinder`: Emits typed resolution and binder helpers. In this initial phase, this legacy binder still relies on library-assisted runtime functions (`gogenconf.BindingValue`, `gogenconf.ResolveField`, etc.) and requires `github.com/arran4/gogenconf` at runtime until #6 is complete.
+
+#### New capability: application-owned native runtime (#5)
+
+Applications can now generate a native configuration runtime directly into application-owned code using `codegen.GenerateRuntime` or `codegen.PlanRuntime`:
+
+```go
+files, err := codegen.GenerateRuntime(codegen.RuntimeOptions{
+    Package: "myconfig",
+})
+if err != nil {
+    return err
+}
+if err := files.WriteToDir("internal/myconfig"); err != nil {
+    return err
+}
+```
+
+This emits:
+- `config_document_generated.go`: Document, Section, Entry, Comment, Blank, Version, and document mutation methods.
+- `config_expr_generated.go`: Expr, Literal, Call, and CloneExpr.
+- `config_parse_generated.go`: native document parser and expression parser with v0/v1 comment ownership and version checking.
+- `config_format_generated.go`: deterministic document and expression formatter.
+
+The generated code depends solely on the Go standard library (`bufio`, `fmt`, `io`, `strconv`, `strings`, `unicode`). It contains no imports of, aliases to, or runtime forwarding back to `github.com/arran4/gogenconf`.
+
+#### Roadmap to build-time-only generation (#4)
+
+- **#5 (this PR)**: Generate application-owned native config runtime instead of importing gogenconf.
+- **#6**: Generate static resolver and declarer code for dependency-free binders.
+- **#7**: Generate application-owned provider support and emit only schema-required runtime features.
+- **#8**: Add a first-class `gogenconf generate` command and canonical project generation contract.
+- **#9**: Generate a schema-specialized application config API.
+- **#10**: Isolated consumer gate proving no gogenconf runtime dependency.
+
 ## Defaults, examples, comments, and evolution
 
 - `Default` is an unresolved expression inserted by `Schema.Seed`.
