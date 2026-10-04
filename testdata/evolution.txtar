@@ -1,0 +1,56 @@
+Evolution from schema v1 to v2 preserves user content while refreshing managed documentation.
+
+-- input/customized.conf --
+config_version 1
+
+section service
+    ## Service settings.
+
+    # We route through our private gateway.
+    ## Endpoint documentation A.
+    endpoint https://private.example.org
+    ## Request timeout.
+    timeout 20s
+    # This extension belongs to our deployment.
+    extension custom
+end
+-- expected/v1-seed.conf --
+config_version 1
+
+section service
+    ## Service settings.
+
+    ## Endpoint documentation A.
+    endpoint https://default.example.org
+    ## Request timeout.
+    timeout 10s
+end
+-- expected/v2-seed.conf --
+config_version 2
+
+section service
+    ## Service settings.
+
+    ## Endpoint documentation B.
+    endpoint https://new-default.example.org
+    ## Request timeout.
+    timeout 10s
+    ## Retry count.
+    retries 3
+end
+-- expected/enriched.conf --
+config_version 2
+
+section service
+    ## Service settings.
+
+    # We route through our private gateway.
+    ## Endpoint documentation B.
+    endpoint https://private.example.org
+    ## Request timeout.
+    timeout 20s
+    # This extension belongs to our deployment.
+    extension custom
+    ## Retry count.
+    retries 3
+end

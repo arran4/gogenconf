@@ -32,7 +32,12 @@ func run() error {
 		}
 		root = parent
 	}
-	c := exec.Command("go", "run", "github.com/arran4/go-subcommand/cmd/gosubc@v0.0.30", "generate", "--dir", root, "--path", "internal/cli", "--man-dir", "internal/cligen/man", "--timestamp=false", "--project-provenance=false", "--replace-template", "cmd/main.go.gotmpl=internal/cligen/main.go.gotmpl")
+	manDir, err := os.MkdirTemp("", "gogenconf-cligen-man-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(manDir)
+	c := exec.Command("go", "run", "github.com/arran4/go-subcommand/cmd/gosubc@v0.0.30", "generate", "--dir", root, "--path", "internal/cli", "--man-dir", manDir, "--timestamp=false", "--project-provenance=false", "--replace-template", "cmd/main.go.gotmpl=internal/cligen/main.go.gotmpl")
 	c.Dir = root
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
@@ -49,7 +54,7 @@ func run() error {
 	man.WriteString(".\\\" Generated from go-subcommand help/man output. DO NOT EDIT.\n.TH GOGENCONF 1 \"\" \"gogenconf\" \"User Commands\"\n.SH NAME\ngogenconf \\- versioned declarative configuration tooling\n.SH SYNOPSIS\n.B gogenconf\n[command] [options]\n.SH DESCRIPTION\n.nf\n")
 	man.Write(help)
 	man.WriteString(".fi\n")
-	files, err := filepath.Glob(filepath.Join(root, "internal/cligen/man/gogenconf-*.1"))
+	files, err := filepath.Glob(filepath.Join(manDir, "gogenconf-*.1"))
 	if err != nil {
 		return err
 	}
@@ -62,9 +67,6 @@ func run() error {
 		lines := strings.Split(string(b), "\n")
 		for i := range lines {
 			lines[i] = strings.TrimRight(lines[i], " \t")
-		}
-		if err := os.WriteFile(file, []byte(strings.Join(lines, "\n")), 0644); err != nil {
-			return err
 		}
 		for _, line := range lines {
 			if strings.HasPrefix(line, ".TH ") || strings.HasPrefix(line, ".\\\"") {
