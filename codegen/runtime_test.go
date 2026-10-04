@@ -44,9 +44,9 @@ func TestRuntimeDeterministicGeneration(t *testing.T) {
 	}
 }
 
-func TestRuntimeFixtureMatchesCheckedIn(t *testing.T) {
+func TestProductionRuntimeMatchesCheckedIn(t *testing.T) {
 	opts := codegen.RuntimeOptions{
-		Package: "runtimefixture",
+		Package: "nativeconfig",
 	}
 
 	files, err := codegen.GenerateRuntime(opts)
@@ -70,7 +70,7 @@ func TestRuntimeFixtureMatchesCheckedIn(t *testing.T) {
 			t.Fatalf("file %d: expected name %q, got %q", i, wantName, files[i].Name)
 		}
 
-		diskPath := filepath.Join("internal/runtimefixture", wantName)
+		diskPath := filepath.Join("..", "internal/nativeconfig", wantName)
 		wantBytes, err := os.ReadFile(diskPath)
 		if err != nil {
 			t.Fatalf("failed reading %s: %v", diskPath, err)
@@ -78,6 +78,9 @@ func TestRuntimeFixtureMatchesCheckedIn(t *testing.T) {
 
 		if !bytes.Equal(files[i].Content, wantBytes) {
 			t.Fatalf("file %s on disk is stale or does not match generator output", wantName)
+		}
+		if bytes.Contains(wantBytes, []byte("github.com/arran4/gogenconf")) {
+			t.Fatalf("production generated file %s imports a gogenconf package", wantName)
 		}
 	}
 }

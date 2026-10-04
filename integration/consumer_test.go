@@ -106,6 +106,17 @@ func TestInstalledCLIAndManual(t *testing.T) {
 	run(t, dir, nil, input, binary, "validate")
 	canonical := run(t, dir, nil, input, binary, "format")
 	run(t, dir, nil, canonical, binary, "format", "--check")
+	versionedDocument := "# operator note\n## managed documentation\nconfig_version 1\nsection service\n ## field documentation\n endpoint from_json_file(from_env(CONFIG), \".nested.key\")\nend\n"
+	wantVersioned := "# operator note\n## managed documentation\nconfig_version 1\nsection service\n    ## field documentation\n    endpoint from_json_file(from_env(CONFIG), .nested.key)\nend\n"
+	if got := run(t, dir, nil, versionedDocument, binary, "format"); got != wantVersioned {
+		t.Fatalf("versioned format mismatch:\n%s", got)
+	}
+	run(t, dir, nil, versionedDocument, binary, "validate")
+	legacy := "### legacy heading\nconfig_version 0\nsection worker worker-1\n    label \"two words\"\nend\n"
+	if got := run(t, dir, nil, legacy, binary, "format"); got != legacy {
+		t.Fatalf("legacy comment ownership changed:\n%s", got)
+	}
+	run(t, dir, nil, legacy, binary, "validate")
 	file := filepath.Join(t.TempDir(), "service.conf")
 	if err := os.WriteFile(file, []byte(input), 0600); err != nil {
 		t.Fatal(err)
@@ -118,17 +129,22 @@ func TestInstalledCLIAndManual(t *testing.T) {
 	if info.Mode().Perm() != 0600 {
 		t.Fatal("write changed permissions")
 	}
-	for _, args := range [][]string{{"format", "--write", "--check", file}, {"expr", "validate", "from_file("}, {"format", "--write"}} {
+	for _, args := range [][]string{{"format", "--write", "--check", file}, {"format", "--check", "-"}, {"expr", "validate", "from_file("}, {"format", "--write"}, {"validate", "-"}} {
 		c := exec.Command(binary, args...)
-		c.Stdin = strings.NewReader(input)
+		badInput := input
+		if args[0] == "validate" {
+			badInput = "section service\n    endpoint value\n"
+		}
+		c.Stdin = strings.NewReader(badInput)
 		if out, err := c.CombinedOutput(); err == nil {
 			t.Fatalf("accepted invalid command %v: %s", args, out)
 		}
 	}
-	got := run(t, dir, nil, "", binary, "expr", "format", "from_file( from_env(KEY_FILE) )")
-	if strings.TrimSpace(got) != "from_file(from_env(KEY_FILE))" {
+	got := run(t, dir, nil, "", binary, "expr", "format", "from_json_file( from_env(CONFIG), \".nested key\" )")
+	if strings.TrimSpace(got) != "from_json_file(from_env(CONFIG), \".nested key\")" {
 		t.Fatal(got)
 	}
+	run(t, dir, nil, "", binary, "expr", "validate", "from_json_file(from_env(CONFIG), .nested.key)")
 	for _, command := range [][]string{{"format", "--help"}, {"validate", "--help"}, {"expr", "format", "--help"}} {
 		if !strings.Contains(run(t, dir, nil, "", append([]string{binary}, command...)...), "Example") {
 			t.Fatal("missing extended help")

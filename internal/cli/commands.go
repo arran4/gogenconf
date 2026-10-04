@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/arran4/gogenconf"
+	"github.com/arran4/gogenconf/internal/nativeconfig"
 )
 
 // Root is a subcommand `gogenconf` -- Versioned declarative configuration language tooling
@@ -58,11 +58,11 @@ func Format(file string, write, check bool) error {
 	if err != nil {
 		return err
 	}
-	d, err := gogenconf.Parse(bytes.NewReader(data))
+	d, err := nativeconfig.Parse(bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
-	out := []byte(gogenconf.Format(d))
+	out := []byte(nativeconfig.Format(d))
 	if check {
 		if !bytes.Equal(data, out) {
 			return fmt.Errorf("document is not canonical")
@@ -90,7 +90,7 @@ func Validate(file string) error {
 	if err != nil {
 		return err
 	}
-	_, err = gogenconf.Parse(bytes.NewReader(b))
+	_, err = nativeconfig.Parse(bytes.NewReader(b))
 	return err
 }
 
@@ -107,7 +107,7 @@ func ExprFormat(expression string) error {
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintln(os.Stdout, gogenconf.FormatExpr(e))
+	_, err = fmt.Fprintln(os.Stdout, nativeconfig.FormatExpr(e))
 	return err
 }
 
@@ -120,7 +120,7 @@ func ExprFormat(expression string) error {
 //	expression: @1 (default: "-") Expression text or '-' for stdin
 func ExprValidate(expression string) error { _, err := expr(expression); return err }
 
-func expr(s string) (gogenconf.Expr, error) {
+func expr(s string) (nativeconfig.Expr, error) {
 	if s == "-" {
 		b, err := io.ReadAll(os.Stdin)
 		if err != nil {
@@ -128,7 +128,7 @@ func expr(s string) (gogenconf.Expr, error) {
 		}
 		s = strings.TrimSpace(string(b))
 	}
-	return gogenconf.ParseExpr(s)
+	return nativeconfig.ParseExpr(s)
 }
 func read(path string) ([]byte, error) {
 	if path == "" || path == "-" {
