@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -35,7 +36,7 @@ func run(t *testing.T, dir string, env []string, input string, args ...string) s
 }
 
 func TestOutsideConsumer(t *testing.T) {
-	src := filepath.Join(root(t), "examples/codegen")
+	src := filepath.Join(root(t), "examples/generated/basic")
 	dir := t.TempDir()
 	err := filepath.WalkDir(src, func(path string, e fs.DirEntry, err error) error {
 		if err != nil {
@@ -55,7 +56,7 @@ func TestOutsideConsumer(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		b = bytes.ReplaceAll(b, []byte("github.com/arran4/gogenconf/examples/codegen"), []byte("example.test/consumer"))
+		b = bytes.ReplaceAll(b, []byte("github.com/arran4/gogenconf/examples/generated/basic"), []byte("example.test/consumer"))
 		return os.WriteFile(filepath.Join(dir, rel), b, 0644)
 	})
 	if err != nil {
@@ -77,6 +78,7 @@ func TestOutsideConsumer(t *testing.T) {
 
 func TestInstalledCLIAndManual(t *testing.T) {
 	dir := root(t)
+	run(t, dir, nil, "", "go", "run", "./internal/cligen")
 	binDir := t.TempDir()
 	run(t, dir, []string{"GOBIN=" + binDir}, "", "go", "install", "./cmd/gogenconf")
 	binary := filepath.Join(binDir, "gogenconf")
@@ -172,7 +174,37 @@ func TestInstalledCLIAndManual(t *testing.T) {
 }
 
 func TestRunnableExamples(t *testing.T) {
-	for _, name := range []string{"basic", "nested-sources", "migration", "provider", "codegen"} {
+	base := filepath.Join(root(t), "examples")
+	var examples []string
+	err := filepath.WalkDir(base, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if entry.Name() != "main.go" {
+			return nil
+		}
+		rel, err := filepath.Rel(base, filepath.Dir(path))
+		if err != nil {
+			return err
+		}
+		if strings.Contains(rel, "internal"+string(filepath.Separator)) || rel == "internal" {
+			return nil
+		}
+		examples = append(examples, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(examples)
+	if len(examples) == 0 {
+		t.Fatal("no runnable examples discovered")
+	}
+	for _, name := range examples {
+		name := name
 		t.Run(name, func(t *testing.T) { run(t, root(t), nil, "", "go", "run", "./examples/"+name) })
 	}
 }

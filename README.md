@@ -5,7 +5,8 @@ strongly typed Go bindings. It is a configuration language and evolution model,
 not merely a file parser or struct generator.
 
 Newly extracted; API stability is not yet promised. Go 1.25 or later is required.
-The module currently uses only the standard library.
+Production library and generated-runtime packages use only the standard library;
+the repository test fixture harness uses `golang.org/x/tools/txtar`.
 
 ## Contents
 
@@ -46,15 +47,15 @@ There is not yet a tagged release. Clone the candidate branch referenced by the
 open extraction PR until it merges; then use main. From the checkout:
 
 ```sh
-go generate ./examples/codegen
-go run ./examples/codegen
+go generate ./examples/generated/basic
+go run ./examples/generated/basic
 # typed endpoint: https://example.test; credential bytes: 10
 go run ./cmd/gogenconf --help
 printf 'config_version 1\nsection service\n endpoint https://example.test\nend\n' |
   go run ./cmd/gogenconf format
 ```
 
-The [complete codegen application](examples/codegen) includes a Go schema, local
+The [complete generated application](examples/generated/basic) includes a Go schema, local
 generator, concrete model, separate binder, and loading code. It creates a
 disposable credential file, places its path in `CREDENTIAL_FILE`, and loads the
 neutral configuration below. Provision real sources separately; never print
@@ -180,7 +181,7 @@ generation uses an application-local driver, not runtime schema/plugin loading.
 
 For example, put `//go:generate go run ./internal/generate` in your application
 package. That driver imports your Go schema and `gogenconf/codegen`, checks errors,
-and writes model/binder files. The [runnable driver](examples/codegen/internal/generate/main.go)
+and writes model/binder files. The [runnable driver](examples/generated/basic/internal/generate/main.go)
 demonstrates this without installing a generator binary. Arbitrary Go schema
 values cannot safely be dynamically discovered by a generic CLI.
 
@@ -346,8 +347,8 @@ Most fields resolve eagerly into ordinary Go values. A field with
 Binding captures the expression without resolving it; `Resolve(ctx)` later reads
 the source, including later file changes. Document edits cannot retarget the
 captured declaration. Caching, invalidation, and content lifecycle remain outside
-the core; adapters can wrap the small interface. See the [compiled provider
-example](codegen/internal/testfixture/example_test.go).
+the core; adapters can wrap the small interface. See the [generated provider
+example](examples/generated/provider).
 
 For a large template or refreshable local content file, choose ProviderBacked
 on that schema field. Bind the ordinary endpoint eagerly while retaining
@@ -435,7 +436,15 @@ Run `go run ./examples/<name>` from this checkout; all examples are executed in 
 - [nested-sources](examples/nested-sources/main.go): env→file and exact string/bytes.
 - [migration](examples/migration/main.go): unresolved rename and enrichment preserving custom content.
 - [provider](examples/provider/main.go): deferred file content created after provider construction, then reloaded.
-- [codegen](examples/codegen): application schema, local generator, concrete Config and separate binder.
+- [generated/basic](examples/generated/basic): application schema, local generator, concrete Config and separate binder.
+- [generated/repeated](examples/generated/repeated): named/repeated sections become a typed slice.
+- [generated/provider](examples/generated/provider): current library-assisted provider output and deferred loading.
+- [generated/runtime](examples/generated/runtime): standalone generated native parser/formatter with no gogenconf runtime import.
+
+Each generated example has a local `//go:generate` driver and checks in its
+output so it is directly reviewable and runnable. `go generate ./...` refreshes
+the full matrix; #6 and #7 remain responsible for removing the library-assisted
+binder/provider boundary.
 
 The integration suite copies codegen sources (not generated output) to a temporary
 outside Go module, regenerates, compiles and executes it. A disposable local
@@ -448,8 +457,9 @@ canonicalization, validation, write permissions, and the compressed manual.
 - `github.com/arran4/gogenconf`: native format, ASTs, schema, migrations/enrichment,
   inspection, registry/resolvers, providers, and binding helpers.
 - `github.com/arran4/gogenconf/codegen`: static model/binder generation.
-- Test schemas, compiled generated fixtures, and their regeneration driver are
-  private under `codegen/internal`, not supported application APIs.
+- Generator regressions use embedded `codegen/testdata/*.txtar` scenarios;
+  compilation behavior is proven in disposable modules rather than permanent
+  generated fixture packages.
 
 ```sh
 go generate ./...
@@ -463,11 +473,15 @@ git diff --check
 hugo --source docs --minify
 ```
 
-The fixture test checks deterministic regeneration. CI also requires a clean
-generation/tidy diff. Repeat `go generate ./...` and require no diff before a PR.
-README is the primary manual: `internal/docgen` generates navigable Hugo pages
-from it, so edit README rather than generated site content. The site uses local
-layouts, no vendored theme. CLI help/man metadata stays in command comments.
+The fixture test checks deterministic regeneration. Update a txtar expected tree
+only with `go test ./codegen -run TestGenerationFixtures -update`; CI never does
+so. CI also requires a clean generation/tidy diff. Repeat `go generate ./...`
+and require no diff before a PR. README is the primary manual: `internal/docgen`
+generates ignored Hugo content from it, so edit README rather than generated site
+content. The compressed man page is likewise an ignored release artifact,
+generated before integration and packaging. See [GENERATED.md](GENERATED.md) for
+the complete ownership policy. The site uses local layouts, no vendored theme.
+CLI help/man metadata stays in command comments.
 CI runs lint, vet, all examples/integration/race tests, deterministic generation,
 GoReleaser config checks, Hugo build and Pages deployment for validated main.
 

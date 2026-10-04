@@ -1,0 +1,36 @@
+External generated runtime consumer has no gogenconf module dependency.
+
+-- input/go.mod --
+module example.test/runtimeconsumer
+
+go 1.25.0
+-- input/main.go --
+package main
+
+import (
+    "fmt"
+    "strings"
+
+    "example.test/runtimeconsumer/myconfig"
+)
+
+func main() {
+    input := "# Config file\nconfig_version 1\nsection server\n    port 8080\n    host from_env(HOST)\nend\n"
+    doc, err := myconfig.Parse(strings.NewReader(input))
+    if err != nil { panic(err) }
+    if doc.Version != 1 { panic("expected version 1") }
+    sec := doc.Section("server")
+    if sec == nil { panic("missing section server") }
+    entry, _, ok := sec.Entry("port")
+    if !ok { panic("missing port") }
+    lit, ok := entry.Value.(myconfig.Literal)
+    if !ok || lit.Value != "8080" { panic("invalid port literal") }
+    cloned := doc.Clone()
+    cloned.Section("server").Set("port", myconfig.Literal{Value: "9090"})
+    if doc.Value("server", "port").(myconfig.Literal).Value != "8080" { panic("mutation of clone affected original") }
+    if cloned.Value("server", "port").(myconfig.Literal).Value != "9090" { panic("clone mutation failed") }
+    if !strings.Contains(myconfig.Format(doc), "port 8080") { panic("formatted output missing port") }
+    fmt.Println("runtime consumer succeeded; port:", lit.Value)
+}
+-- expected/stdout.txt --
+runtime consumer succeeded; port: 8080
