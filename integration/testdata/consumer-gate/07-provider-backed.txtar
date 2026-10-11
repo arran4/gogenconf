@@ -1,0 +1,51 @@
+Case: provider-backed lazy evaluation
+
+-- options.json --
+{"scenario":"provider-backed"}
+
+-- schema.json --
+{
+  "version": 1,
+  "sections": [
+    {
+      "name": "security",
+      "go_name": "Security",
+      "go_type": "SecurityConfig",
+      "fields": [
+        {"key": "token", "go_name": "Token", "go_type": "string", "policy": "provider", "required": true}
+      ]
+    }
+  ]
+}
+
+-- input/config.conf --
+config_version 1
+
+section security
+    token lazily-evaluated-value
+end
+
+-- input/main.go --
+package main
+
+import (
+	"context"
+	"fmt"
+	"consumer.test/app/appconfig"
+)
+
+func main() {
+	ctx := context.Background()
+	cfg, _, err := appconfig.LoadFile(ctx, "config.conf")
+	if err != nil {
+		panic(err)
+	}
+	val, err := cfg.Security.Token.Resolve(ctx)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("provider token: %s\n", val)
+}
+
+-- expected/stdout.txt --
+provider token: lazily-evaluated-value

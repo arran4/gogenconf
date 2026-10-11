@@ -1,0 +1,52 @@
+Case: literal and default-only scalar configuration binding
+
+-- options.json --
+{"scenario":"literal-default"}
+
+-- schema.json --
+{
+  "version": 1,
+  "sections": [
+    {
+      "name": "server",
+      "go_name": "Server",
+      "go_type": "ServerConfig",
+      "fields": [
+        {"key": "host", "go_name": "Host", "go_type": "string", "default": "127.0.0.1"},
+        {"key": "port", "go_name": "Port", "go_type": "int", "default": "8080"},
+        {"key": "enabled", "go_name": "Enabled", "go_type": "bool", "default": "true"},
+        {"key": "timeout", "go_name": "Timeout", "go_type": "time.Duration", "default": "5s"}
+      ]
+    }
+  ]
+}
+
+-- input/config.conf --
+config_version 1
+
+section server
+    port 9090
+    timeout 15s
+end
+
+-- input/main.go --
+package main
+
+import (
+	"context"
+	"fmt"
+	"consumer.test/app/appconfig"
+)
+
+func main() {
+	ctx := context.Background()
+	cfg, _, err := appconfig.LoadFile(ctx, "config.conf")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("server: host=%s, port=%d, enabled=%t, timeout=%v\n",
+		cfg.Server.Host, cfg.Server.Port, cfg.Server.Enabled, cfg.Server.Timeout)
+}
+
+-- expected/stdout.txt --
+server: host=127.0.0.1, port=9090, enabled=true, timeout=15s

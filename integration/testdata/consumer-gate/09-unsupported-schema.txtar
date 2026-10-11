@@ -1,0 +1,22 @@
+Case: unsupported schema type mapping fails generation before output
+
+-- options.json --
+{"scenario":"unsupported-schema","expect_error":true}
+
+-- schema.json --
+{
+  "version": 1,
+  "sections": [
+    {
+      "name": "bad",
+      "go_name": "Bad",
+      "go_type": "BadConfig",
+      "fields": [
+        {"key": "val", "go_name": "Val", "go_type": "complex128"}
+      ]
+    }
+  ]
+}
+
+-- expected/error.txt --
+unsupported type mapping complex128
