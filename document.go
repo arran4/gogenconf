@@ -458,6 +458,48 @@ func CloneExpr(e Expr) Expr {
 			args[i] = CloneExpr(a)
 		}
 		return &Call{Name: e.Name, Args: args, Span: e.Span, Origin: e.Origin}
+	case List:
+		items := make([]Expr, len(e.Items))
+		for i, it := range e.Items {
+			items[i] = CloneExpr(it)
+		}
+		return List{Items: items, Span: e.Span, Origin: e.Origin}
+	case *List:
+		if e == nil {
+			return nil
+		}
+		items := make([]Expr, len(e.Items))
+		for i, it := range e.Items {
+			items[i] = CloneExpr(it)
+		}
+		return &List{Items: items, Span: e.Span, Origin: e.Origin}
+	case Map:
+		entries := make([]MapEntry, len(e.Entries))
+		for i, en := range e.Entries {
+			entries[i] = MapEntry{
+				Key:     en.Key,
+				Value:   CloneExpr(en.Value),
+				KeySpan: en.KeySpan,
+				Span:    en.Span,
+				Origin:  en.Origin,
+			}
+		}
+		return Map{Entries: entries, Span: e.Span, Origin: e.Origin}
+	case *Map:
+		if e == nil {
+			return nil
+		}
+		entries := make([]MapEntry, len(e.Entries))
+		for i, en := range e.Entries {
+			entries[i] = MapEntry{
+				Key:     en.Key,
+				Value:   CloneExpr(en.Value),
+				KeySpan: en.KeySpan,
+				Span:    en.Span,
+				Origin:  en.Origin,
+			}
+		}
+		return &Map{Entries: entries, Span: e.Span, Origin: e.Origin}
 	default:
 		return nil
 	}

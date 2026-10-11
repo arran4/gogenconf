@@ -33,6 +33,33 @@ type Call struct {
 
 func (Call) expr() {}
 
+// List is an ordered collection of expressions ([]T).
+type List struct {
+	Items  []Expr
+	Span   Span
+	Origin Origin
+}
+
+func (List) expr() {}
+
+// MapEntry represents a key-value entry in a keyed collection ([$]T).
+type MapEntry struct {
+	Key     string
+	Value   Expr
+	KeySpan Span
+	Span    Span
+	Origin  Origin
+}
+
+// Map is a string-keyed collection of expressions ([$]T).
+type Map struct {
+	Entries []MapEntry
+	Span    Span
+	Origin  Origin
+}
+
+func (Map) expr() {}
+
 func SpanOf(e Expr) Span {
 	switch v := e.(type) {
 	case Literal:
@@ -44,6 +71,18 @@ func SpanOf(e Expr) Span {
 	case Call:
 		return v.Span
 	case *Call:
+		if v != nil {
+			return v.Span
+		}
+	case List:
+		return v.Span
+	case *List:
+		if v != nil {
+			return v.Span
+		}
+	case Map:
+		return v.Span
+	case *Map:
 		if v != nil {
 			return v.Span
 		}
@@ -62,6 +101,18 @@ func OriginOf(e Expr) Origin {
 	case Call:
 		return v.Origin
 	case *Call:
+		if v != nil {
+			return v.Origin
+		}
+	case List:
+		return v.Origin
+	case *List:
+		if v != nil {
+			return v.Origin
+		}
+	case Map:
+		return v.Origin
+	case *Map:
 		if v != nil {
 			return v.Origin
 		}
@@ -89,6 +140,24 @@ func WithSpan(e Expr, s Span) Expr {
 			c.Span = s
 			return &c
 		}
+	case List:
+		v.Span = s
+		return v
+	case *List:
+		if v != nil {
+			c := *v
+			c.Span = s
+			return &c
+		}
+	case Map:
+		v.Span = s
+		return v
+	case *Map:
+		if v != nil {
+			c := *v
+			c.Span = s
+			return &c
+		}
 	}
 	return e
 }
@@ -108,6 +177,24 @@ func WithOrigin(e Expr, o Origin) Expr {
 		v.Origin = o
 		return v
 	case *Call:
+		if v != nil {
+			c := *v
+			c.Origin = o
+			return &c
+		}
+	case List:
+		v.Origin = o
+		return v
+	case *List:
+		if v != nil {
+			c := *v
+			c.Origin = o
+			return &c
+		}
+	case Map:
+		v.Origin = o
+		return v
+	case *Map:
 		if v != nil {
 			c := *v
 			c.Origin = o
@@ -207,6 +294,12 @@ func (p *exprParser) parseExpr(argument bool) (Expr, error) {
 	if p.input[p.pos] == '"' {
 		return p.quoted()
 	}
+	if p.input[p.pos] == '[' {
+		return p.list()
+	}
+	if p.input[p.pos] == '{' {
+		return p.mapExpr()
+	}
 	start := p.pos
 	for p.pos < len(p.input) && isIdent(p.input[p.pos]) {
 		p.pos++
@@ -260,16 +353,119 @@ func (p *exprParser) parseExpr(argument bool) (Expr, error) {
 	valueStart := p.pos
 	for p.pos < len(p.input) {
 		c := p.input[p.pos]
-		if argument && (c == ',' || c == ')') {
+		if argument && (c == ',' || c == ')' || c == ']' || c == '}') {
 			break
 		}
-		if c == '(' || c == ')' || c == '"' {
+		if c == '(' || c == ')' || c == '"' || c == '[' || c == ']' || c == '{' || c == '}' {
 			return nil, fmt.Errorf("quote literal punctuation at byte %d", p.pos)
 		}
 		p.pos++
 	}
 	v := strings.TrimSpace(p.input[valueStart:p.pos])
 	return Literal{Value: v, Span: p.spanAt(valueStart), Origin: OriginAuthored}, nil
+}
+
+func (p *exprParser) list() (Expr, error) {
+	start := p.pos
+	p.pos++ // consume '['
+	p.depth++
+	defer func() { p.depth-- }()
+	var items []Expr
+	for {
+		p.space()
+		if p.pos >= len(p.input) {
+			return nil, fmt.Errorf("unterminated list at byte %d", start)
+		}
+		if p.input[p.pos] == ']' {
+			p.pos++
+			return List{
+				Items:  items,
+				Span:   p.spanAt(start),
+				Origin: OriginAuthored,
+			}, nil
+		}
+		item, err := p.parseExpr(true)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+		p.space()
+		if p.pos < len(p.input) && p.input[p.pos] == ',' {
+			p.pos++
+			p.space()
+		} else if p.pos < len(p.input) && p.input[p.pos] != ']' {
+			return nil, fmt.Errorf("expected ',' or ']' at byte %d", p.pos)
+		}
+	}
+}
+
+func (p *exprParser) mapExpr() (Expr, error) {
+	start := p.pos
+	p.pos++ // consume '{'
+	p.depth++
+	defer func() { p.depth-- }()
+	var entries []MapEntry
+	for {
+		p.space()
+		if p.pos >= len(p.input) {
+			return nil, fmt.Errorf("unterminated map at byte %d", start)
+		}
+		if p.input[p.pos] == '}' {
+			p.pos++
+			return Map{
+				Entries: entries,
+				Span:    p.spanAt(start),
+				Origin:  OriginAuthored,
+			}, nil
+		}
+		keyStart := p.pos
+		var key string
+		var keySpan Span
+		if p.input[p.pos] == '"' {
+			qExpr, err := p.quoted()
+			if err != nil {
+				return nil, err
+			}
+			lit, ok := qExpr.(Literal)
+			if !ok {
+				return nil, fmt.Errorf("invalid map key at byte %d", keyStart)
+			}
+			key = lit.Value
+			keySpan = lit.Span
+		} else {
+			for p.pos < len(p.input) && isIdent(p.input[p.pos]) {
+				p.pos++
+			}
+			if p.pos == keyStart {
+				return nil, fmt.Errorf("expected map key at byte %d", keyStart)
+			}
+			key = p.input[keyStart:p.pos]
+			keySpan = p.spanAt(keyStart)
+		}
+		p.space()
+		if p.pos < len(p.input) && (p.input[p.pos] == ':' || p.input[p.pos] == '=') {
+			p.pos++
+			p.space()
+		}
+		val, err := p.parseExpr(true)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, MapEntry{
+			Key:     key,
+			Value:   val,
+			KeySpan: keySpan,
+			Span:    p.spanAt(keyStart),
+			Origin:  OriginAuthored,
+		})
+		p.space()
+		if p.pos < len(p.input) && p.input[p.pos] == ',' {
+			p.pos++
+			p.space()
+		} else if p.pos < len(p.input) && p.input[p.pos] != '}' {
+			return nil, fmt.Errorf("expected ',' or '}' at byte %d", p.pos)
+		}
+	}
 }
 
 func (p *exprParser) quoted() (Expr, error) {
@@ -316,6 +512,32 @@ func FormatExpr(e Expr) string {
 		return e.Name + "(" + strings.Join(args, ", ") + ")"
 	case *Call:
 		return FormatExpr(*e)
+	case List:
+		items := make([]string, len(e.Items))
+		for i, a := range e.Items {
+			items[i] = FormatExpr(a)
+		}
+		return "[" + strings.Join(items, ", ") + "]"
+	case *List:
+		if e == nil {
+			return "[]"
+		}
+		return FormatExpr(*e)
+	case Map:
+		entries := make([]string, len(e.Entries))
+		for i, en := range e.Entries {
+			keyStr := en.Key
+			if !identifier(keyStr) {
+				keyStr = strconv.Quote(keyStr)
+			}
+			entries[i] = keyStr + ": " + FormatExpr(en.Value)
+		}
+		return "{" + strings.Join(entries, ", ") + "}"
+	case *Map:
+		if e == nil {
+			return "{}"
+		}
+		return FormatExpr(*e)
 	default:
 		return ""
 	}
@@ -326,7 +548,7 @@ func bareLiteral(v string) bool {
 		return false
 	}
 	for _, r := range v {
-		if unicode.IsSpace(r) || r == '(' || r == ')' || r == ',' || r == '"' || r == '\\' {
+		if unicode.IsSpace(r) || r == '(' || r == ')' || r == ',' || r == '"' || r == '\\' || r == '[' || r == ']' || r == '{' || r == '}' {
 			return false
 		}
 	}
