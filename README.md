@@ -43,8 +43,8 @@ fetch secrets, and normal field binding requires no runtime reflection.
 
 ## Quick start
 
-There is not yet a tagged release. Clone the candidate branch referenced by the
-open extraction PR until it merges; then use main. From the checkout:
+There is not yet a tagged release. Clone current `main` or an explicit commit.
+From the checkout:
 
 ```sh
 go generate ./examples/generated/basic
@@ -402,8 +402,8 @@ dependency enters either the CLI or library.
 
 ## Installation and man pages
 
-Tagged releases are pending. Until merge/release, use the extraction PR's public
-commit in place of `REV`; after merge `main` is also available:
+Tagged releases are pending. Until the first release, use current `main` or an
+explicit commit in place of `REV`:
 
 ```sh
 go get github.com/arran4/gogenconf@REV
@@ -487,8 +487,9 @@ GoReleaser config checks, Hugo build and Pages deployment for validated main.
 
 ## Release and recovery
 
-Do not create a tag manually. After the standalone PR merges, the release operator
-uses the [first-release issue](https://github.com/arran4/gogenconf/issues/2).
+Do not create a tag manually. The release operator uses the
+[first-release issue](https://github.com/arran4/gogenconf/issues/2) when the
+maintainer decides the pre-v1 release candidate is ready.
 In Actions, dispatch **CI/CD** at main with a `release-major`, `release-minor`,
 `release-patch`, `release-test`, `release-rc`, or `release-alpha` mode. For the first
 release choose a **pre-v1** candidate, preferably alpha/test, with an explicit
