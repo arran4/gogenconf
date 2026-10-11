@@ -2,20 +2,28 @@
 
 package binding
 
+import runtimeconfig "github.com/arran4/gogenconf/examples/generated/provider/appconfig"
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	gogenconf "github.com/arran4/gogenconf"
+	"io"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 )
-import runtimeconfig "github.com/arran4/gogenconf/examples/generated/provider/appconfig"
 
+var _ = bytes.NewReader
+var _ = io.WriteString
+var _ = os.Open
+var _ = strconv.Itoa
+var _ = time.Second
 var _ = strings.Join
 var _ = fmt.Errorf
 var _ = errors.New
-var _ = strconv.IntSize
 var ErrInvalidDefault = errors.New("invalid generated default")
 
 func defaultValueError(path string, sensitive bool, err error) error {
@@ -48,6 +56,26 @@ func Resolve(ctx context.Context, d *gogenconf.Document, r *gogenconf.Registry, 
 		}
 		if e != nil {
 			c.Service.Content = gogenconf.FieldProvider[[]byte](r, e, "service.content", false)
+		}
+	}
+	if s, ok := any(&c.Service).(interface{ SanitizeConfig() error }); ok {
+		if err := s.SanitizeConfig(); err != nil {
+			return runtimeconfig.Config{}, fmt.Errorf("sanitize %s: %w", "service", err)
+		}
+	}
+	if v, ok := any(&c.Service).(interface{ ValidateConfig() error }); ok {
+		if err := v.ValidateConfig(); err != nil {
+			return runtimeconfig.Config{}, fmt.Errorf("validate %s: %w", "service", err)
+		}
+	}
+	if s, ok := any(&c).(interface{ SanitizeConfig() error }); ok {
+		if err := s.SanitizeConfig(); err != nil {
+			return runtimeconfig.Config{}, fmt.Errorf("sanitize config: %w", err)
+		}
+	}
+	if v, ok := any(&c).(interface{ ValidateConfig() error }); ok {
+		if err := v.ValidateConfig(); err != nil {
+			return runtimeconfig.Config{}, fmt.Errorf("validate config: %w", err)
 		}
 	}
 	return c, nil

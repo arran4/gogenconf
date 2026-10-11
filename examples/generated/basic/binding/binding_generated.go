@@ -2,20 +2,28 @@
 
 package binding
 
+import runtimeconfig "github.com/arran4/gogenconf/examples/generated/basic/appconfig"
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	gogenconf "github.com/arran4/gogenconf"
+	"io"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 )
-import runtimeconfig "github.com/arran4/gogenconf/examples/generated/basic/appconfig"
 
+var _ = bytes.NewReader
+var _ = io.WriteString
+var _ = os.Open
+var _ = strconv.Itoa
+var _ = time.Second
 var _ = strings.Join
 var _ = fmt.Errorf
 var _ = errors.New
-var _ = strconv.IntSize
 var ErrInvalidDefault = errors.New("invalid generated default")
 
 func defaultValueError(path string, sensitive bool, err error) error {
@@ -29,7 +37,9 @@ func defaultValueError(path string, sensitive bool, err error) error {
 // Invalid static or environment values are errors; they are never treated as omission.
 func Defaults(lookup gogenconf.LookupEnv) (runtimeconfig.Config, error) {
 	var c runtimeconfig.Config
-	c.Service.Endpoint = "https://example.test"
+	{
+		c.Service.Endpoint = "https://example.test"
+	}
 	return c, nil
 }
 
@@ -49,6 +59,16 @@ func Resolve(ctx context.Context, d *gogenconf.Document, r *gogenconf.Registry, 
 			if err != nil {
 				return runtimeconfig.Config{}, err
 			}
+			if s, ok := any(&value).(interface{ SanitizeConfig() error }); ok {
+				if err := s.SanitizeConfig(); err != nil {
+					return runtimeconfig.Config{}, fmt.Errorf("sanitize %s: %w", "service.endpoint", err)
+				}
+			}
+			if v, ok := any(&value).(interface{ ValidateConfig() error }); ok {
+				if err := v.ValidateConfig(); err != nil {
+					return runtimeconfig.Config{}, fmt.Errorf("validate %s: %w", "service.endpoint", err)
+				}
+			}
 			c.Service.Endpoint = value
 		}
 	}
@@ -62,7 +82,37 @@ func Resolve(ctx context.Context, d *gogenconf.Document, r *gogenconf.Registry, 
 			if err != nil {
 				return runtimeconfig.Config{}, err
 			}
+			if s, ok := any(&value).(interface{ SanitizeConfig() error }); ok {
+				if err := s.SanitizeConfig(); err != nil {
+					return runtimeconfig.Config{}, fmt.Errorf("sanitize %s: failed", "service.credential")
+				}
+			}
+			if v, ok := any(&value).(interface{ ValidateConfig() error }); ok {
+				if err := v.ValidateConfig(); err != nil {
+					return runtimeconfig.Config{}, fmt.Errorf("validate %s: failed", "service.credential")
+				}
+			}
 			c.Service.Credential = value
+		}
+	}
+	if s, ok := any(&c.Service).(interface{ SanitizeConfig() error }); ok {
+		if err := s.SanitizeConfig(); err != nil {
+			return runtimeconfig.Config{}, fmt.Errorf("sanitize %s: %w", "service", err)
+		}
+	}
+	if v, ok := any(&c.Service).(interface{ ValidateConfig() error }); ok {
+		if err := v.ValidateConfig(); err != nil {
+			return runtimeconfig.Config{}, fmt.Errorf("validate %s: %w", "service", err)
+		}
+	}
+	if s, ok := any(&c).(interface{ SanitizeConfig() error }); ok {
+		if err := s.SanitizeConfig(); err != nil {
+			return runtimeconfig.Config{}, fmt.Errorf("sanitize config: %w", err)
+		}
+	}
+	if v, ok := any(&c).(interface{ ValidateConfig() error }); ok {
+		if err := v.ValidateConfig(); err != nil {
+			return runtimeconfig.Config{}, fmt.Errorf("validate config: %w", err)
 		}
 	}
 	return c, nil

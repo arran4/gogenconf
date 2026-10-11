@@ -12,15 +12,17 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var _ = bytes.NewReader
 var _ = io.WriteString
 var _ = os.Open
+var _ = strconv.Itoa
+var _ = time.Second
 var _ = strings.Join
 var _ = fmt.Errorf
 var _ = errors.New
-var _ = strconv.IntSize
 
 type Config struct {
 	Service ServiceConfig
@@ -48,7 +50,9 @@ func defaultValueError(path string, sensitive bool, err error) error {
 // Invalid static or environment values are errors; they are never treated as omission.
 func Defaults(lookup nativeconfig.LookupEnv) (Config, error) {
 	var c Config
-	c.Service.Endpoint = "https://api.internal.net"
+	{
+		c.Service.Endpoint = "https://api.internal.net"
+	}
 	return c, nil
 }
 
@@ -68,6 +72,16 @@ func Resolve(ctx context.Context, d *nativeconfig.Document, r *nativeconfig.Regi
 			if err != nil {
 				return Config{}, err
 			}
+			if s, ok := any(&value).(interface{ SanitizeConfig() error }); ok {
+				if err := s.SanitizeConfig(); err != nil {
+					return Config{}, fmt.Errorf("sanitize %s: %w", "service.endpoint", err)
+				}
+			}
+			if v, ok := any(&value).(interface{ ValidateConfig() error }); ok {
+				if err := v.ValidateConfig(); err != nil {
+					return Config{}, fmt.Errorf("validate %s: %w", "service.endpoint", err)
+				}
+			}
 			c.Service.Endpoint = value
 		}
 	}
@@ -81,7 +95,27 @@ func Resolve(ctx context.Context, d *nativeconfig.Document, r *nativeconfig.Regi
 			if err != nil {
 				return Config{}, err
 			}
+			if s, ok := any(&value).(interface{ SanitizeConfig() error }); ok {
+				if err := s.SanitizeConfig(); err != nil {
+					return Config{}, fmt.Errorf("sanitize %s: failed", "service.api_key")
+				}
+			}
+			if v, ok := any(&value).(interface{ ValidateConfig() error }); ok {
+				if err := v.ValidateConfig(); err != nil {
+					return Config{}, fmt.Errorf("validate %s: failed", "service.api_key")
+				}
+			}
 			c.Service.APIKey = value
+		}
+	}
+	if s, ok := any(&c.Service).(interface{ SanitizeConfig() error }); ok {
+		if err := s.SanitizeConfig(); err != nil {
+			return Config{}, fmt.Errorf("sanitize %s: %w", "service", err)
+		}
+	}
+	if v, ok := any(&c.Service).(interface{ ValidateConfig() error }); ok {
+		if err := v.ValidateConfig(); err != nil {
+			return Config{}, fmt.Errorf("validate %s: %w", "service", err)
 		}
 	}
 	for _, section := range d.Sections {
@@ -97,10 +131,40 @@ func Resolve(ctx context.Context, d *nativeconfig.Document, r *nativeconfig.Regi
 				if err != nil {
 					return Config{}, err
 				}
+				if s, ok := any(&value).(interface{ SanitizeConfig() error }); ok {
+					if err := s.SanitizeConfig(); err != nil {
+						return Config{}, fmt.Errorf("sanitize %s: %w", "worker.concurrency", err)
+					}
+				}
+				if v, ok := any(&value).(interface{ ValidateConfig() error }); ok {
+					if err := v.ValidateConfig(); err != nil {
+						return Config{}, fmt.Errorf("validate %s: %w", "worker.concurrency", err)
+					}
+				}
 				v.Concurrency = value
 			}
 		}
+		if s, ok := any(&v).(interface{ SanitizeConfig() error }); ok {
+			if err := s.SanitizeConfig(); err != nil {
+				return Config{}, fmt.Errorf("sanitize %s: %w", "worker", err)
+			}
+		}
+		if v, ok := any(&v).(interface{ ValidateConfig() error }); ok {
+			if err := v.ValidateConfig(); err != nil {
+				return Config{}, fmt.Errorf("validate %s: %w", "worker", err)
+			}
+		}
 		c.Workers = append(c.Workers, v)
+	}
+	if s, ok := any(&c).(interface{ SanitizeConfig() error }); ok {
+		if err := s.SanitizeConfig(); err != nil {
+			return Config{}, fmt.Errorf("sanitize config: %w", err)
+		}
+	}
+	if v, ok := any(&c).(interface{ ValidateConfig() error }); ok {
+		if err := v.ValidateConfig(); err != nil {
+			return Config{}, fmt.Errorf("validate config: %w", err)
+		}
 	}
 	return c, nil
 }

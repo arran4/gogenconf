@@ -271,6 +271,52 @@ This delivers a full application lifecycle API with zero runtime dependency on `
 
 See the complete runnable example at [examples/generated/appconfig](examples/generated/appconfig/main.go).
 
+#### Rich Go type mappings and lifecycle hooks (#15)
+
+`gogenconf` supports a comprehensive matrix of Go types for schema fields, mapped without reflection or runtime library dependencies:
+
+| Category | Supported Types | Resolution & Conversion Semantics |
+|---|---|---|
+| **Text & Bytes** | `string`, `[]byte` | Direct assignment; exact bytes and whitespace preserved. |
+| **Boolean** | `bool` | Parsed via `strconv.ParseBool`. |
+| **Signed Integers** | `int`, `int8`, `int16`, `int32`, `int64` | Parsed via `strconv.ParseInt` with bit-width validation. |
+| **Unsigned Integers** | `uint`, `uint8`, `uint16`, `uint32`, `uint64` | Parsed via `strconv.ParseUint` with bit-width validation. |
+| **Floating Point** | `float32`, `float64` | Parsed via `strconv.ParseFloat`. |
+| **Duration** | `time.Duration` | Parsed via `time.ParseDuration` (e.g. `10s`, `500ms`, `2h`). |
+| **Scalar Slices** | `[]string`, `[]int`, `[]time.Duration`, etc. | Comma-separated string elements resolved into typed slice elements. |
+| **Optional / Pointers** | `*int`, `*string`, `*bool`, `*time.Duration`, etc. | Retains distinction between omission (`nil`) and explicit zero values (e.g. `&0`). |
+| **Named / Custom Types** | `type Port int`, `type Secret string`, `net.IP` | Automatically resolves underlying primitives, `ConfigDecoder`, or `encoding.TextUnmarshaler`. |
+
+##### Type-driven lifecycle interfaces
+
+Applications can opt fields, sections, or root configurations into stage behavior through narrow Go interfaces without reflection or string-named hooks:
+
+- **Custom String Decoding**:
+  ```go
+  type ConfigDecoder interface {
+      DecodeConfig(val string) error
+  }
+  ```
+  Types implementing standard `encoding.TextUnmarshaler` (`UnmarshalText([]byte) error`) are also automatically supported.
+
+- **Sanitization & Normalization**:
+  ```go
+  type ConfigSanitizer interface {
+      SanitizeConfig() error
+  }
+  ```
+
+- **Validation**:
+  ```go
+  type ConfigValidator interface {
+      ValidateConfig() error
+  }
+  ```
+
+##### Fail-closed sensitive diagnostic redaction
+
+When a field is marked `Sensitive: true` in the schema, validation or conversion errors are fail-closed and automatically redacted to avoid disclosing confidential credentials or keys in logs and diagnostics.
+
 #### Production dogfooding
 
 The shipped `gogenconf` syntax CLI now generates and checks in `internal/nativeconfig` through the repository-local `internal/runtimegen` driver. `format`, `validate`, `expr format`, and `expr validate` use that generated runtime in production. The root `gogenconf` parser and formatter remain the canonical public implementation and the differential-conformance oracle; they are not a normal fallback for the CLI syntax path. This demonstrates the dependency-free native parsing boundary from #5, while complete generated-binder dependency removal remains #6 and generator/product parity follow-up remains #12/#19.
