@@ -30,14 +30,66 @@ func Format(d *Document) string {
 					fmt.Fprintf(&b, "config_version %d\n", d.Version)
 				}
 			case *Section:
-				fmt.Fprintf(&b, "section %s\n", v.Name)
-				write(v.Items, "    ")
-				b.WriteString("end\n")
-			case Entry:
-				if v.Value == nil {
-					fmt.Fprintf(&b, "%s%s\n", indent, v.Key)
+				mutStr := ""
+				if v.Mutation != MutationNone {
+					mutStr = v.Mutation.String()
+				}
+				if v.Brace {
+					if v.Name == "" {
+						if mutStr != "" {
+							fmt.Fprintf(&b, "%s%s {\n", indent, mutStr)
+						} else {
+							fmt.Fprintf(&b, "%s{\n", indent)
+						}
+					} else if needsQuote(v.Name) {
+						fmt.Fprintf(&b, "%s%s%s {\n", indent, strconv.Quote(v.Name), mutStr)
+					} else {
+						fmt.Fprintf(&b, "%s%s%s {\n", indent, v.Name, mutStr)
+					}
+					subSections := false
+					for _, i := range v.Items {
+						if _, ok := i.(*Section); ok {
+							subSections = true
+							break
+						}
+					}
+					write(v.Items, indent+"    ")
+					if !subSections && len(v.Sections) > 0 {
+						for _, sub := range v.Sections {
+							write([]Item{sub}, indent+"    ")
+						}
+					}
+					fmt.Fprintf(&b, "%s}\n", indent)
 				} else {
-					fmt.Fprintf(&b, "%s%s %s\n", indent, v.Key, FormatExpr(v.Value))
+					if mutStr != "" {
+						fmt.Fprintf(&b, "%ssection%s %s\n", indent, mutStr, v.Name)
+					} else {
+						fmt.Fprintf(&b, "%ssection %s\n", indent, v.Name)
+					}
+					subSections := false
+					for _, i := range v.Items {
+						if _, ok := i.(*Section); ok {
+							subSections = true
+							break
+						}
+					}
+					write(v.Items, indent+"    ")
+					if !subSections && len(v.Sections) > 0 {
+						for _, sub := range v.Sections {
+							write([]Item{sub}, indent+"    ")
+						}
+					}
+					fmt.Fprintf(&b, "%send\n", indent)
+				}
+			case Entry:
+				mutStr := ""
+				if v.Mutation != MutationNone {
+					mutStr = v.Mutation.String()
+				}
+				if v.Value == nil {
+					fmt.Fprintf(&b, "%s%s%s\n", indent, v.Key, mutStr)
+				} else {
+					fmt.Fprintf(&b, "%s%s%s %s\n", indent, v.Key, mutStr, FormatExpr(v.Value))
 				}
 			case Comment:
 				marker := "#"
@@ -123,4 +175,16 @@ func bareLiteral(v string) bool {
 		}
 	}
 	return true
+}
+
+func needsQuote(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, c := range []byte(s) {
+		if !(c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || i > 0 && (c >= '0' && c <= '9' || c == '-' || c == '.' || c == '/')) {
+			return true
+		}
+	}
+	return false
 }
