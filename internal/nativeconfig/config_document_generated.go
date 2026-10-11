@@ -2,6 +2,11 @@
 
 package nativeconfig
 
+import (
+	"fmt"
+	"strings"
+)
+
 // CommentKind records ownership rather than inferring it from prose.
 type CommentKind uint8
 
@@ -9,6 +14,108 @@ const (
 	UserComment CommentKind = iota
 	DocumentationComment
 )
+
+// Origin distinguishes where a configuration node or value originated.
+type Origin uint8
+
+const (
+	OriginAuthored Origin = iota
+	OriginDefaulted
+	OriginEnriched
+	OriginMigrated
+)
+
+func (o Origin) String() string {
+	switch o {
+	case OriginAuthored:
+		return "authored"
+	case OriginDefaulted:
+		return "defaulted"
+	case OriginEnriched:
+		return "enriched"
+	case OriginMigrated:
+		return "migrated"
+	default:
+		return "unknown"
+	}
+}
+
+// Span records source text position.
+type Span struct {
+	Source string // file path, fragment name, or input descriptor
+	Line   int    // 1-indexed line
+	Column int    // 1-indexed column
+	Offset int    // byte offset from start
+}
+
+func (s Span) String() string {
+	if s.Source != "" {
+		if s.Line > 0 && s.Column > 0 {
+			return fmt.Sprintf("%s:%d:%d", s.Source, s.Line, s.Column)
+		}
+		if s.Line > 0 {
+			return fmt.Sprintf("%s:%d", s.Source, s.Line)
+		}
+		return s.Source
+	}
+	if s.Line > 0 && s.Column > 0 {
+		return fmt.Sprintf("line %d:%d", s.Line, s.Column)
+	}
+	if s.Line > 0 {
+		return fmt.Sprintf("line %d", s.Line)
+	}
+	return ""
+}
+
+func (s Span) IsZero() bool {
+	return s.Source == "" && s.Line == 0 && s.Column == 0 && s.Offset == 0
+}
+
+type Stage string
+
+const (
+	StageParse    Stage = "parse"
+	StageMigrate  Stage = "migrate"
+	StageResolve  Stage = "resolve"
+	StageConvert  Stage = "convert"
+	StageSanitize Stage = "sanitize"
+	StageValidate Stage = "validate"
+	StageBind     Stage = "bind"
+)
+
+// ConfigError wraps a configuration failure with lifecycle stage, field path,
+// and source span/provenance without leaking sensitive values.
+type ConfigError struct {
+	Stage  Stage
+	Path   string
+	Source Span
+	Err    error
+}
+
+func (e *ConfigError) Error() string {
+	var parts []string
+	if e.Stage != "" {
+		parts = append(parts, string(e.Stage))
+	}
+	if e.Path != "" {
+		parts = append(parts, e.Path)
+	}
+	if !e.Source.IsZero() {
+		parts = append(parts, e.Source.String())
+	}
+	prefix := "configuration error"
+	if len(parts) > 0 {
+		prefix = fmt.Sprintf("configuration %s", strings.Join(parts, " "))
+	}
+	if e.Err != nil {
+		return fmt.Sprintf("%s: %v", prefix, e.Err)
+	}
+	return prefix
+}
+
+func (e *ConfigError) Unwrap() error {
+	return e.Err
+}
 
 // Item preserves ordered document structure. Adapters may add Raw items for
 // syntax they intentionally do not interpret.
@@ -26,8 +133,10 @@ type Blank struct{}
 func (Blank) item() {}
 
 type Entry struct {
-	Key   string
-	Value Expr
+	Key    string
+	Value  Expr
+	Span   Span
+	Origin Origin
 	// Defaulted is transient provenance for runtime precedence, never serialized.
 	Defaulted bool
 }
@@ -39,8 +148,10 @@ type Raw struct{ Text string }
 func (Raw) item() {}
 
 type Section struct {
-	Name  string
-	Items []Item
+	Name   string
+	Span   Span
+	Origin Origin
+	Items  []Item
 }
 
 func (*Section) item() {}
@@ -118,7 +229,7 @@ func (d *Document) Clone() *Document {
 		return result
 	}
 	for _, s := range d.Sections {
-		c := &Section{Name: s.Name, Items: cloneItems(s.Items)}
+		c := &Section{Name: s.Name, Span: s.Span, Origin: s.Origin, Items: cloneItems(s.Items)}
 		sections[s] = c
 		out.Sections = append(out.Sections, c)
 	}
@@ -132,11 +243,11 @@ func (d *Document) Clone() *Document {
 }
 
 func (s *Section) Set(key string, value Expr) {
-	if _, i, ok := s.Entry(key); ok {
-		s.Items[i] = Entry{Key: key, Value: value}
+	if old, i, ok := s.Entry(key); ok {
+		s.Items[i] = Entry{Key: key, Value: value, Span: old.Span, Origin: OriginMigrated}
 		return
 	}
-	s.Items = append(s.Items, Entry{Key: key, Value: value})
+	s.Items = append(s.Items, Entry{Key: key, Value: value, Origin: OriginMigrated})
 }
 
 func (s *Section) Delete(key string) bool {

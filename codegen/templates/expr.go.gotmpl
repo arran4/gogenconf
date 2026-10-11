@@ -9,32 +9,135 @@ type Expr interface {
 }
 
 // Literal is the implicit declaration used by a bare configuration value.
-type Literal struct{ Value string }
+type Literal struct {
+	Value  string
+	Span   Span
+	Origin Origin
+}
 
 func (Literal) expr() {}
 
 // Call is a named declarer with recursively declared arguments.
 type Call struct {
-	Name string
-	Args []Expr
+	Name   string
+	Args   []Expr
+	Span   Span
+	Origin Origin
 }
 
 func (Call) expr() {}
 
+func SpanOf(e Expr) Span {
+	switch v := e.(type) {
+	case Literal:
+		return v.Span
+	case *Literal:
+		if v != nil {
+			return v.Span
+		}
+	case Call:
+		return v.Span
+	case *Call:
+		if v != nil {
+			return v.Span
+		}
+	}
+	return Span{}
+}
+
+func OriginOf(e Expr) Origin {
+	switch v := e.(type) {
+	case Literal:
+		return v.Origin
+	case *Literal:
+		if v != nil {
+			return v.Origin
+		}
+	case Call:
+		return v.Origin
+	case *Call:
+		if v != nil {
+			return v.Origin
+		}
+	}
+	return OriginAuthored
+}
+
+func WithSpan(e Expr, s Span) Expr {
+	switch v := e.(type) {
+	case Literal:
+		v.Span = s
+		return v
+	case *Literal:
+		if v != nil {
+			c := *v
+			c.Span = s
+			return &c
+		}
+	case Call:
+		v.Span = s
+		return v
+	case *Call:
+		if v != nil {
+			c := *v
+			c.Span = s
+			return &c
+		}
+	}
+	return e
+}
+
+func WithOrigin(e Expr, o Origin) Expr {
+	switch v := e.(type) {
+	case Literal:
+		v.Origin = o
+		return v
+	case *Literal:
+		if v != nil {
+			c := *v
+			c.Origin = o
+			return &c
+		}
+	case Call:
+		v.Origin = o
+		return v
+	case *Call:
+		if v != nil {
+			c := *v
+			c.Origin = o
+			return &c
+		}
+	}
+	return e
+}
+
 func CloneExpr(e Expr) Expr {
 	switch e := e.(type) {
+	case nil:
+		return nil
 	case Literal:
 		return e
 	case *Literal:
-		return *e
+		if e == nil {
+			return nil
+		}
+		c := *e
+		return &c
 	case Call:
 		args := make([]Expr, len(e.Args))
 		for i, a := range e.Args {
 			args[i] = CloneExpr(a)
 		}
-		return Call{Name: e.Name, Args: args}
+		return Call{Name: e.Name, Args: args, Span: e.Span, Origin: e.Origin}
 	case *Call:
-		return CloneExpr(*e)
+		if e == nil {
+			return nil
+		}
+		args := make([]Expr, len(e.Args))
+		for i, a := range e.Args {
+			args[i] = CloneExpr(a)
+		}
+		return &Call{Name: e.Name, Args: args, Span: e.Span, Origin: e.Origin}
 	default:
 		return nil
 	}

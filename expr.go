@@ -15,23 +15,142 @@ type Expr interface {
 }
 
 // Literal is the implicit declaration used by a bare configuration value.
-type Literal struct{ Value string }
+type Literal struct {
+	Value  string
+	Span   Span
+	Origin Origin
+}
 
 func (Literal) expr() {}
 
 // Call is a named declarer with recursively declared arguments.
 type Call struct {
-	Name string
-	Args []Expr
+	Name   string
+	Args   []Expr
+	Span   Span
+	Origin Origin
 }
 
 func (Call) expr() {}
 
+func SpanOf(e Expr) Span {
+	switch v := e.(type) {
+	case Literal:
+		return v.Span
+	case *Literal:
+		if v != nil {
+			return v.Span
+		}
+	case Call:
+		return v.Span
+	case *Call:
+		if v != nil {
+			return v.Span
+		}
+	}
+	return Span{}
+}
+
+func OriginOf(e Expr) Origin {
+	switch v := e.(type) {
+	case Literal:
+		return v.Origin
+	case *Literal:
+		if v != nil {
+			return v.Origin
+		}
+	case Call:
+		return v.Origin
+	case *Call:
+		if v != nil {
+			return v.Origin
+		}
+	}
+	return OriginAuthored
+}
+
+func WithSpan(e Expr, s Span) Expr {
+	switch v := e.(type) {
+	case Literal:
+		v.Span = s
+		return v
+	case *Literal:
+		if v != nil {
+			c := *v
+			c.Span = s
+			return &c
+		}
+	case Call:
+		v.Span = s
+		return v
+	case *Call:
+		if v != nil {
+			c := *v
+			c.Span = s
+			return &c
+		}
+	}
+	return e
+}
+
+func WithOrigin(e Expr, o Origin) Expr {
+	switch v := e.(type) {
+	case Literal:
+		v.Origin = o
+		return v
+	case *Literal:
+		if v != nil {
+			c := *v
+			c.Origin = o
+			return &c
+		}
+	case Call:
+		v.Origin = o
+		return v
+	case *Call:
+		if v != nil {
+			c := *v
+			c.Origin = o
+			return &c
+		}
+	}
+	return e
+}
+
 // ParseExpr parses a literal or a nested declarer expression.
 func ParseExpr(input string) (Expr, error) {
-	p := exprParser{input: strings.TrimSpace(input)}
+	return ParseExprWithSpan(input, Span{})
+}
+
+// ParseExprWithSpan parses a literal or a nested declarer expression, attaching source span metadata.
+func ParseExprWithSpan(input string, base Span) (Expr, error) {
+	trimmed := strings.TrimSpace(input)
+	leadingSpace := len(input) - len(strings.TrimLeft(input, " \t\r\n"))
+	startCol := base.Column
+	if startCol > 0 {
+		startCol += leadingSpace
+	}
+	startOffset := base.Offset
+	if startOffset > 0 || base.Line > 0 {
+		startOffset += leadingSpace
+	}
+	p := exprParser{
+		input:       trimmed,
+		baseSource:  base.Source,
+		baseLine:    base.Line,
+		startCol:    startCol,
+		startOffset: startOffset,
+	}
 	if p.input == "" {
-		return Literal{}, nil
+		return Literal{
+			Span: Span{
+				Source: base.Source,
+				Line:   base.Line,
+				Column: startCol,
+				Offset: startOffset,
+			},
+			Origin: OriginAuthored,
+		}, nil
 	}
 	e, err := p.parseExpr(false)
 	if err != nil {
@@ -45,9 +164,30 @@ func ParseExpr(input string) (Expr, error) {
 }
 
 type exprParser struct {
-	input string
-	pos   int
-	depth int
+	input       string
+	pos         int
+	depth       int
+	baseSource  string
+	baseLine    int
+	startCol    int
+	startOffset int
+}
+
+func (p *exprParser) spanAt(startPos int) Span {
+	col := 0
+	if p.startCol > 0 {
+		col = p.startCol + startPos
+	}
+	off := 0
+	if p.startOffset > 0 || p.baseLine > 0 {
+		off = p.startOffset + startPos
+	}
+	return Span{
+		Source: p.baseSource,
+		Line:   p.baseLine,
+		Column: col,
+		Offset: off,
+	}
 }
 
 func (p *exprParser) space() {
@@ -62,7 +202,7 @@ func (p *exprParser) parseExpr(argument bool) (Expr, error) {
 	}
 	p.space()
 	if p.pos >= len(p.input) {
-		return Literal{}, nil
+		return Literal{Span: p.spanAt(p.pos), Origin: OriginAuthored}, nil
 	}
 	if p.input[p.pos] == '"' {
 		return p.quoted()
@@ -85,7 +225,7 @@ func (p *exprParser) parseExpr(argument bool) (Expr, error) {
 			p.space()
 			if p.pos < len(p.input) && p.input[p.pos] == ')' {
 				p.pos++
-				return Call{Name: name}, nil
+				return Call{Name: name, Span: p.spanAt(start), Origin: OriginAuthored}, nil
 			}
 			for {
 				if p.pos >= len(p.input) || p.input[p.pos] == ',' || p.input[p.pos] == ')' {
@@ -102,7 +242,7 @@ func (p *exprParser) parseExpr(argument bool) (Expr, error) {
 				}
 				if p.input[p.pos] == ')' {
 					p.pos++
-					return Call{Name: name, Args: args}, nil
+					return Call{Name: name, Args: args, Span: p.spanAt(start), Origin: OriginAuthored}, nil
 				}
 				if p.input[p.pos] != ',' {
 					return nil, fmt.Errorf("expected comma or closing parenthesis at byte %d", p.pos)
@@ -129,7 +269,7 @@ func (p *exprParser) parseExpr(argument bool) (Expr, error) {
 		p.pos++
 	}
 	v := strings.TrimSpace(p.input[valueStart:p.pos])
-	return Literal{Value: v}, nil
+	return Literal{Value: v, Span: p.spanAt(valueStart), Origin: OriginAuthored}, nil
 }
 
 func (p *exprParser) quoted() (Expr, error) {
@@ -147,7 +287,7 @@ func (p *exprParser) quoted() (Expr, error) {
 			if err != nil {
 				return nil, fmt.Errorf("invalid quoted escape at byte %d", start)
 			}
-			return Literal{Value: v}, nil
+			return Literal{Value: v, Span: p.spanAt(start), Origin: OriginAuthored}, nil
 		}
 		p.pos++
 	}

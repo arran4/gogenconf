@@ -1,6 +1,7 @@
 package gogenconf
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -137,7 +138,10 @@ func (s Schema) Enrich(d *Document) error {
 		return err
 	}
 	if !d.HasVersion || d.Version != s.Version {
-		return fmt.Errorf("configuration must be migrated to version %d before enrichment", s.Version)
+		return &ConfigError{
+			Stage: StageValidate,
+			Err:   fmt.Errorf("configuration must be migrated to version %d before enrichment", s.Version),
+		}
 	}
 	for _, def := range s.Sections {
 		var sections []*Section
@@ -150,7 +154,7 @@ func (s Schema) Enrich(d *Document) error {
 		} else {
 			section := d.Section(def.Name)
 			if section == nil {
-				section = &Section{Name: def.Name}
+				section = &Section{Name: def.Name, Origin: OriginEnriched}
 				if len(d.Sections) > 0 {
 					d.Items = append(d.Items, Blank{})
 				}
@@ -199,7 +203,12 @@ func (s Schema) Enrich(d *Document) error {
 					for _, text := range f.Documentation {
 						section.Items = append(section.Items, Comment{Kind: DocumentationComment, Text: text})
 					}
-					section.Items = append(section.Items, Entry{Key: f.Key, Value: CloneExpr(f.Default), Defaulted: true})
+					section.Items = append(section.Items, Entry{
+						Key:       f.Key,
+						Value:     WithOrigin(CloneExpr(f.Default), OriginDefaulted),
+						Defaulted: true,
+						Origin:    OriginDefaulted,
+					})
 				}
 			}
 		}
@@ -209,13 +218,82 @@ func (s Schema) Enrich(d *Document) error {
 
 func (s Schema) CheckVersion(d *Document) error {
 	if d == nil {
-		return fmt.Errorf("nil configuration document")
+		return &ConfigError{
+			Stage: StageValidate,
+			Err:   errors.New("nil configuration document"),
+		}
 	}
 	if d.Version < 0 {
-		return fmt.Errorf("invalid configuration version")
+		return &ConfigError{
+			Stage: StageValidate,
+			Err:   errors.New("invalid configuration version"),
+		}
 	}
 	if d.HasVersion && d.Version > s.Version {
-		return fmt.Errorf("configuration version %d is newer than supported version %d", d.Version, s.Version)
+		return &ConfigError{
+			Stage: StageValidate,
+			Err:   fmt.Errorf("configuration version %d is newer than supported version %d", d.Version, s.Version),
+		}
+	}
+	return nil
+}
+
+// Validate verifies that the document conforms to the schema's version and required fields,
+// returning structured ConfigErrors with StageValidate, Path, and Source span when available.
+func (s Schema) Validate(d *Document) error {
+	if err := s.CheckVersion(d); err != nil {
+		return err
+	}
+	for _, def := range s.Sections {
+		if def.Repeated {
+			for _, section := range d.Sections {
+				if !strings.HasPrefix(section.Name, def.Name+" ") {
+					continue
+				}
+				for _, f := range def.Fields {
+					if !f.Required {
+						continue
+					}
+					entry, _, exists := section.Entry(f.Key)
+					if !exists || entry.Value == nil {
+						return &ConfigError{
+							Stage:  StageValidate,
+							Path:   section.Name + "." + f.Key,
+							Source: section.Span,
+							Err:    fmt.Errorf("required field %q is missing", f.Key),
+						}
+					}
+				}
+			}
+		} else {
+			section := d.Section(def.Name)
+			if section == nil {
+				for _, f := range def.Fields {
+					if f.Required {
+						return &ConfigError{
+							Stage: StageValidate,
+							Path:  def.Name + "." + f.Key,
+							Err:   fmt.Errorf("required section %q is missing", def.Name),
+						}
+					}
+				}
+				continue
+			}
+			for _, f := range def.Fields {
+				if !f.Required {
+					continue
+				}
+				entry, _, exists := section.Entry(f.Key)
+				if !exists || entry.Value == nil {
+					return &ConfigError{
+						Stage:  StageValidate,
+						Path:   def.Name + "." + f.Key,
+						Source: section.Span,
+						Err:    fmt.Errorf("required field %q is missing", f.Key),
+					}
+				}
+			}
+		}
 	}
 	return nil
 }
