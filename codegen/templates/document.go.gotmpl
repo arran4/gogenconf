@@ -565,3 +565,30 @@ func (s *Section) Delete(key string) bool {
 	}
 	return false
 }
+
+// Clone recursively copies a section and its child sections and entries.
+func (s *Section) Clone() *Section {
+	if s == nil {
+		return nil
+	}
+	out := &Section{
+		Name:   s.Name,
+		Span:   s.Span,
+		Origin: s.Origin,
+	}
+	for _, item := range s.Items {
+		switch v := item.(type) {
+		case Entry:
+			v.Value = CloneExpr(v.Value)
+			out.Items = append(out.Items, v)
+		case *Section:
+			out.Items = append(out.Items, v.Clone())
+		default:
+			out.Items = append(out.Items, item)
+		}
+	}
+	for _, sub := range s.Sections {
+		out.Sections = append(out.Sections, sub.Clone())
+	}
+	return out
+}
