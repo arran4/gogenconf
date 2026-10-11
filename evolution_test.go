@@ -1,12 +1,16 @@
 package gogenconf_test
 
 import (
-	"os"
+	_ "embed"
 	"strings"
 	"testing"
 
 	m "github.com/arran4/gogenconf"
+	"golang.org/x/tools/txtar"
 )
+
+//go:embed testdata/evolution.txtar
+var evolutionFixture []byte
 
 func evolutionSchema(version int) m.Schema {
 	s := m.Schema{Version: version, Sections: []m.SectionDefinition{{Name: "service", Documentation: []string{"Service settings."}, Fields: []m.Field{
@@ -22,23 +26,26 @@ func evolutionSchema(version int) m.Schema {
 }
 
 func TestEvolutionGolden(t *testing.T) {
+	archive := txtar.Parse(evolutionFixture)
 	read := func(name string) string {
 		t.Helper()
-		b, err := os.ReadFile("testdata/evolution/" + name + ".conf")
-		if err != nil {
-			t.Fatal(err)
+		for _, file := range archive.Files {
+			if file.Name == name {
+				return string(file.Data)
+			}
 		}
-		return string(b)
+		t.Fatalf("fixture file %s not found", name)
+		return ""
 	}
 	for _, tc := range []struct {
 		version int
 		name    string
-	}{{1, "v1"}, {2, "v2"}} {
+	}{{1, "expected/v1-seed.conf"}, {2, "expected/v2-seed.conf"}} {
 		if got := m.Format(evolutionSchema(tc.version).Seed()); got != read(tc.name) {
 			t.Fatalf("%s seed differs:\n%s", tc.name, got)
 		}
 	}
-	d, err := m.Parse(strings.NewReader(read("customized")))
+	d, err := m.Parse(strings.NewReader(read("input/customized.conf")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +59,7 @@ func TestEvolutionGolden(t *testing.T) {
 	if err := evolutionSchema(2).Enrich(d); err != nil {
 		t.Fatal(err)
 	}
-	want := read("enriched")
+	want := read("expected/enriched.conf")
 	if got := m.Format(d); got != want {
 		t.Fatalf("enrichment differs:\n%s", got)
 	}

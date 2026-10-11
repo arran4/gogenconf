@@ -2,7 +2,6 @@ package codegen_test
 
 import (
 	"bytes"
-	"os"
 	"strings"
 	"testing"
 
@@ -11,7 +10,7 @@ import (
 	"github.com/arran4/gogenconf/codegen/internal/testschema"
 )
 
-func TestFixtureIsCurrentAndDeterministic(t *testing.T) {
+func TestGenerationIsDeterministic(t *testing.T) {
 	s := testschema.Definition()
 	options := codegen.Options{Package: "testfixture", LibraryImport: "github.com/arran4/gogenconf"}
 	first, err := codegen.Generate(s, options)
@@ -22,12 +21,8 @@ func TestFixtureIsCurrentAndDeterministic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := os.ReadFile("internal/testfixture/config_generated.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(first, second) || !bytes.Equal(first, want) {
-		t.Fatal("generated fixture is stale or nondeterministic")
+	if !bytes.Equal(first, second) {
+		t.Fatal("generated output is nondeterministic")
 	}
 	for _, fragment := range []string{"// Code generated", "DO NOT EDIT.", "Key     []byte", "gogenconf.Provider[[]byte]", "ResolveField[[]byte]", `"service", "key"`} {
 		if !strings.Contains(string(first), fragment) {

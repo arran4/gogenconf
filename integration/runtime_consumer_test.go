@@ -1,13 +1,18 @@
 package integration
 
 import (
+	"embed"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/arran4/gogenconf/codegen"
+	"github.com/arran4/gogenconf/internal/testutil"
 )
+
+//go:embed testdata/runtime-consumer.txtar
+var runtimeConsumerFixture embed.FS
 
 func TestRuntimeConsumerHasNoGogenconfDependency(t *testing.T) {
 	// 1. Generate runtime source using the public codegen API
@@ -26,85 +31,48 @@ func TestRuntimeConsumerHasNoGogenconfDependency(t *testing.T) {
 		}
 	}
 
-	// 3. Create a temporary external module with NO gogenconf dependency in go.mod
 	dir := t.TempDir()
+	fixture, err := testutil.LoadCases(runtimeConsumerFixture, "testdata")
+	if err != nil || len(fixture) != 1 {
+		t.Fatalf("runtime fixture = %v, %v", fixture, err)
+	}
+	input, err := testutil.Tree(fixture[0].Archive, "input")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, file := range input {
+		path := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, file.Data, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 3. The fixture's go.mod has NO require or replace for gogenconf.
 	configPkgDir := filepath.Join(dir, "myconfig")
 	if err := files.WriteToDir(configPkgDir); err != nil {
 		t.Fatalf("failed to write generated runtime: %v", err)
 	}
 
-	// go.mod has NO require or replace for github.com/arran4/gogenconf
-	goMod := "module example.test/runtimeconsumer\n\ngo 1.25.0\n"
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// 4. Create an application main.go that uses the generated package
-	consumerMain := `package main
-
-import (
-	"fmt"
-	"strings"
-
-	"example.test/runtimeconsumer/myconfig"
-)
-
-func main() {
-	input := "# Config file\nconfig_version 1\nsection server\n    port 8080\n    host from_env(HOST)\nend\n"
-	doc, err := myconfig.Parse(strings.NewReader(input))
-	if err != nil {
-		panic(err)
-	}
-	if doc.Version != 1 {
-		panic("expected version 1")
-	}
-	sec := doc.Section("server")
-	if sec == nil {
-		panic("missing section server")
-	}
-	entry, _, ok := sec.Entry("port")
-	if !ok {
-		panic("missing port")
-	}
-	lit, ok := entry.Value.(myconfig.Literal)
-	if !ok || lit.Value != "8080" {
-		panic("invalid port literal")
-	}
-
-	// Test cloning and mutating
-	cloned := doc.Clone()
-	cloned.Section("server").Set("port", myconfig.Literal{Value: "9090"})
-	if doc.Value("server", "port").(myconfig.Literal).Value != "8080" {
-		panic("mutation of clone affected original")
-	}
-	if cloned.Value("server", "port").(myconfig.Literal).Value != "9090" {
-		panic("clone mutation failed")
-	}
-
-	formatted := myconfig.Format(doc)
-	if !strings.Contains(formatted, "port 8080") {
-		panic("formatted output missing port")
-	}
-	fmt.Println("runtime consumer succeeded; port:", lit.Value)
-}
-`
-	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(consumerMain), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// 5. Verify dependencies using go list -deps ./...
+	// 4. Verify dependencies using go list -deps ./...
 	// gogenconf MUST NOT appear in the runtime build/dependency graph.
 	deps := run(t, dir, []string{"GOWORK=off"}, "", "go", "list", "-deps", "./...")
 	if strings.Contains(deps, "github.com/arran4/gogenconf") {
 		t.Fatalf("go list -deps contains github.com/arran4/gogenconf:\n%s", deps)
 	}
 
-	// 6. Build the consumer application
+	// 5. Build the consumer application
 	run(t, dir, []string{"GOWORK=off"}, "", "go", "build", "./...")
 
-	// 7. Run the consumer application and verify output
+	// 6. Run the consumer application and verify output
 	out := run(t, dir, []string{"GOWORK=off"}, "", "go", "run", ".")
-	if !strings.Contains(out, "runtime consumer succeeded; port: 8080") {
+	expected, err := testutil.Tree(fixture[0].Archive, "expected")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, string(expected["stdout.txt"].Data)) {
 		t.Fatalf("unexpected consumer output: %s", out)
 	}
 }

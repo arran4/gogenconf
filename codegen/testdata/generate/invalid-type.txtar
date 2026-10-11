@@ -1,0 +1,6 @@
+Case: unsupported mappings fail before any output is produced.
+
+-- options.json --
+{"scenario":"invalid-type"}
+-- expected/error.txt --
+unsupported type mapping complex128

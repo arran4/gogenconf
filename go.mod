@@ -1,3 +1,5 @@
 module github.com/arran4/gogenconf
 
 go 1.25.0
+
+require golang.org/x/tools v0.39.0

@@ -1,0 +1,58 @@
+Case: generated binder compiles and proves eager bytes, provider snapshots,
+InputOnly migration use, required/sensitive failures, and provider adaptation.
+
+-- input/config_generated_test.go --
+package fixture
+
+import (
+    "bytes"
+    "context"
+    "fmt"
+    "os"
+    "path/filepath"
+    "strings"
+    "testing"
+
+    m "github.com/arran4/gogenconf"
+)
+
+func TestGeneratedBinding(t *testing.T) {
+    dir := t.TempDir()
+    keyPath, contentPath := filepath.Join(dir, "key"), filepath.Join(dir, "content")
+    key := []byte(" \x00123456789abcd\n")
+    if err := os.WriteFile(keyPath, key, 0600); err != nil { t.Fatal(err) }
+    t.Setenv("FIXTURE_KEY", keyPath)
+    t.Setenv("FIXTURE_CONTENT", contentPath)
+    doc, err := m.Parse(strings.NewReader("config_version 2\nsection service\n key from_file(from_env(FIXTURE_KEY))\n content from_file(from_env(FIXTURE_CONTENT))\nend\n"))
+    if err != nil { t.Fatal(err) }
+    r, _ := m.NewStandardRegistry()
+    cfg, err := Resolve(context.Background(), doc, r, nil)
+    if err != nil { t.Fatal(err) }
+    var eager []byte = cfg.Service.Key
+    var provider m.Provider[[]byte] = cfg.Service.Content
+    if cfg.Service.Label != "default" || !bytes.Equal(eager, key) { t.Fatal("incorrect eager binding") }
+    if _, err := provider.Resolve(context.Background()); err == nil { t.Fatal("missing provider content accepted") }
+    if err := os.WriteFile(contentPath, []byte("first"), 0600); err != nil { t.Fatal(err) }
+    if got, err := provider.Resolve(context.Background()); err != nil || string(got) != "first" { t.Fatalf("provider = %q, %v", got, err) }
+    doc.Section("service").Set("content", m.Literal{Value: "changed declaration"})
+    if err := os.WriteFile(contentPath, []byte("second"), 0600); err != nil { t.Fatal(err) }
+    if got, err := provider.Resolve(context.Background()); err != nil || string(got) != "second" { t.Fatalf("snapshot reload = %q, %v", got, err) }
+}
+
+func TestMigrationAndErrors(t *testing.T) {
+    d, err := m.Parse(strings.NewReader("config_version 1\nsection service\n legacy_location from_env(UNREAD_LOCATION)\nend\n"))
+    if err != nil { t.Fatal(err) }
+    migrations := m.NewMigrations()
+    if err := migrations.Register(1, func(d *m.Document) error { s := d.Section("service"); s.Set("content", m.Call{Name: "from_file", Args: []m.Expr{m.CloneExpr(d.Value("service", "legacy_location"))}}); s.Delete("legacy_location"); return nil }); err != nil { t.Fatal(err) }
+    if err := migrations.Apply(d, 2); err != nil { t.Fatal(err) }
+    if got := m.FormatExpr(d.Value("service", "content")); got != "from_file(from_env(UNREAD_LOCATION))" { t.Fatal(got) }
+    r, _ := m.NewStandardRegistry()
+    if _, err := Resolve(context.Background(), &m.Document{Version: 2, HasVersion: true}, r, nil); err == nil { t.Fatal("required key missing") }
+    d = &m.Document{Version: 2, HasVersion: true}; s := &m.Section{Name: "service"}; d.AddSection(s); s.Set("key", m.Call{Name: "leaky"})
+    _ = r.Register("leaky", []byte(nil), func(context.Context, *m.Registry, []m.Expr) (any, error) { return nil, fmt.Errorf("DISTINCTIVE_SECRET") })
+    if _, err := Resolve(context.Background(), d, r, nil); err == nil || strings.Contains(err.Error(), "DISTINCTIVE_SECRET") { t.Fatalf("error = %v", err) }
+}
+
+type adapter[T any] struct{ p m.Provider[T] }
+func (a adapter[T]) Data() (*T, error) { v, err := a.p.Resolve(context.Background()); return &v, err }
+func TestProviderAdapter(t *testing.T) { v, err := (adapter[string]{m.ProviderFunc[string](func(context.Context) (string, error) { return "content", nil })}).Data(); if err != nil || *v != "content" { t.Fatal("adapter failed") } }
