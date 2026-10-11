@@ -24,6 +24,7 @@ the repository test fixture harness uses `golang.org/x/tools/txtar`.
 - [Packages and development](#packages-and-development)
 - [Release and recovery](#release-and-recovery)
 - [Provenance and stability](#provenance-and-stability)
+- [Contributing and engineering guidance](#contributing-and-engineering-guidance)
 - [License](#license)
 
 ## Purpose and boundaries
@@ -523,6 +524,14 @@ merge `7ca592d9aae476169c568d0bd4ce75654a099e48`, with subtree history preserved
 See [PROVENANCE.md](PROVENANCE.md). Application-specific schemas and policy remain
 outside this library. API stability is not yet promised; review migrations and
 pin tested versions. No future declarers or release artifacts are implied to exist.
+
+## Contributing and engineering guidance
+
+Before changing public behaviour, tests, parsers or generation rules, see
+[repository-specific agent/contributor guidance](AGENTS.md). The applicable
+rationale is collected in [Suggested Coding Standards](https://arran4.github.io/blog/post/2026/055-suggested-coding-standards-for-repositories-and-agents/);
+this is selective guidance, not a blanket rewrite policy. The [standards adoption issue](https://github.com/arran4/gogenconf/issues/27)
+tracks the required implementation/test audit separately from documentation.
 
 ## License
 
