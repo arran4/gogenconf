@@ -15,6 +15,9 @@ var runtimeTemplates = template.Must(template.ParseFS(runtimeTemplatesFS, "templ
 
 type templateData struct {
 	Package string
+	HasEnv  bool
+	HasFile bool
+	HasJSON bool
 }
 
 // Generate executes the generation plan and produces deterministic formatted source files.
@@ -27,7 +30,13 @@ func (p *Plan) Generate() (FileSet, error) {
 			return fmt.Errorf("runtime template %s not found", tmplName)
 		}
 		var buf bytes.Buffer
-		if err := tmpl.Execute(&buf, templateData{Package: p.Package}); err != nil {
+		td := templateData{
+			Package: p.Package,
+			HasEnv:  p.HasDeclarer("from_env"),
+			HasFile: p.HasDeclarer("from_file"),
+			HasJSON: p.HasDeclarer("from_json_file"),
+		}
+		if err := tmpl.Execute(&buf, td); err != nil {
 			return fmt.Errorf("execute template %s: %w", tmplName, err)
 		}
 		formatted, err := format.Source(buf.Bytes())
@@ -61,6 +70,18 @@ func (p *Plan) Generate() (FileSet, error) {
 
 	if p.HasCapability(CapabilityFormatter) {
 		if err := render("format.go.gotmpl", p.FilePrefix+"format_generated.go"); err != nil {
+			return nil, err
+		}
+	}
+
+	if p.HasCapability(CapabilityResolver) {
+		if err := render("resolve.go.gotmpl", p.FilePrefix+"resolve_generated.go"); err != nil {
+			return nil, err
+		}
+	}
+
+	if p.HasCapability(CapabilityProvider) {
+		if err := render("provider.go.gotmpl", p.FilePrefix+"provider_generated.go"); err != nil {
 			return nil, err
 		}
 	}
