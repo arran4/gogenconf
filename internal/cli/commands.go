@@ -11,6 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"text/tabwriter"
+
+	"github.com/arran4/gogenconf/codegen"
 	"github.com/arran4/gogenconf/internal/nativeconfig"
 )
 
@@ -22,7 +25,7 @@ import (
 // Declarers remain unresolved until explicit application binding. No command
 // reads environment/file sources mentioned inside a configuration value.
 //
-// Commands: format, validate, expr format, expr validate, version.
+// Commands: format, validate, expr format, expr validate, template layout, template export, version.
 // Use --help on any command for examples. Version reports build version/commit/date.
 // Manual: https://github.com/arran4/gogenconf#readme
 // Site: https://arran4.github.io/gogenconf/
@@ -119,6 +122,56 @@ func ExprFormat(expression string) error {
 //
 //	expression: @1 (default: "-") Expression text or '-' for stdin
 func ExprValidate(expression string) error { _, err := expr(expression); return err }
+
+// TemplateLayout is a subcommand `gogenconf template layout` -- Display built-in template layout
+//
+// Lists built-in code generation templates, their target generated file names,
+// runtime capabilities, and descriptions.
+//
+// Examples:
+//
+//	gogenconf template layout
+func TemplateLayout() error {
+	w := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
+	fmt.Fprintln(w, "TEMPLATE\tTARGET FILE\tCAPABILITY\tDESCRIPTION")
+	for _, info := range codegen.BuiltinTemplateLayout() {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", info.Name, info.TargetFile, info.Capability, info.Description)
+	}
+	return w.Flush()
+}
+
+// TemplateExport is a subcommand `gogenconf template export` -- Export built-in templates to directory or txtar
+//
+// Exports the complete set of built-in code generation templates to a target
+// directory or as a portable txtar archive.
+//
+// Examples:
+//
+//	gogenconf template export --output ./templates
+//	gogenconf template export --as-txtar
+//	gogenconf template export --as-txtar --output templates.txtar
+//
+// Flags:
+//
+//	output: --output (default: "") Destination directory or file path
+//	asTxtar: --as-txtar (default: false) Export as portable txtar archive
+func TemplateExport(output string, asTxtar bool) error {
+	if asTxtar {
+		data, err := codegen.ExportTemplatesTxtar()
+		if err != nil {
+			return err
+		}
+		if output == "" || output == "-" {
+			_, err = os.Stdout.Write(data)
+			return err
+		}
+		return os.WriteFile(output, data, 0644)
+	}
+	if output == "" || output == "-" {
+		return fmt.Errorf("--output directory is required when not exporting as txtar")
+	}
+	return codegen.ExportTemplates(output)
+}
 
 func expr(s string) (nativeconfig.Expr, error) {
 	if s == "-" {

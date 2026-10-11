@@ -18,6 +18,7 @@ the repository test fixture harness uses `golang.org/x/tools/txtar`.
 - [Defaults, examples, comments, and evolution](#defaults-examples-comments-and-evolution)
 - [Migration walkthrough](#migration-walkthrough)
 - [Sensitive inspection and providers](#sensitive-inspection-and-providers)
+- [Template layout, export, and customization](#template-layout-export-and-customization)
 - [CLI reference](#cli-reference)
 - [Installation and man pages](#installation-and-man-pages)
 - [Runnable examples](#runnable-examples)
@@ -480,6 +481,51 @@ if err != nil {
   underlying error messages (which may contain secret data or tokens) are redacted to
   `source resolution failed` to guarantee zero diagnostic leakage.
 
+## Template layout, export, and customization
+
+gogenconf embeds its code generation templates directly in the binary, emitting
+application-owned runtime code with zero runtime dependency on `gogenconf`.
+Projects can inspect built-in templates, export them, or customize generated code
+through layered template overlays.
+
+### Inspecting and exporting templates
+
+```sh
+# Display built-in template layout, target artifacts, and capabilities
+gogenconf template layout
+
+# Export the complete built-in template set to a directory
+gogenconf template export --output ./my-templates
+
+# Export templates as a portable txtar archive
+gogenconf template export --as-txtar > templates.txtar
+gogenconf template export --as-txtar --output templates.txtar
+```
+
+### Layered overlays in code generation
+
+Template customization operates at code generation time. Custom overlays can be
+provided as individual named templates, directories, `fs.FS` filesystems, or
+portable `txtar` archives:
+
+```go
+plan, err := codegen.PlanRuntime(codegen.RuntimeOptions{
+	Package: "myconfig",
+	Overlays: []codegen.Overlay{
+		codegen.OverlayFile("document.go.gotmpl", customDocTmpl),
+		codegen.OverlayTxtar(txtarData),
+	},
+})
+files, err := plan.Generate()
+```
+
+- **Precedence**: Built-in templates form the base layer. Earlier overlays apply;
+  later overlays replace the same named template. Unrelated templates compose.
+- **Validation**: Unknown template names and path traversal attempts (`../`, `/`)
+  are rejected immediately with clear diagnostics.
+- **Integrity**: Generated sources must produce `gofmt`-valid Go code or generation
+  fails, preserving deterministic output and dependency-free application code.
+
 ## CLI reference
 
 The CLI is schema-independent and never resolves declarations. Every command
@@ -491,6 +537,8 @@ supports `--help`/`-h`; root help describes the architecture and documentation.
 | `gogenconf validate [FILE]` | FILE defaults to stdin | Syntax/structure only, silent success. |
 | `gogenconf expr format [EXPRESSION]` | Omitted or `-` reads stdin | Canonical expression, no resolution. |
 | `gogenconf expr validate [EXPRESSION]` | Omitted or `-` reads stdin | Expression grammar only, silent success. |
+| `gogenconf template layout` | No flags | Display built-in template layout, capabilities, and target files. |
+| `gogenconf template export` | `--output DIR`, `--as-txtar` | Export complete built-in template set to directory or portable txtar archive. |
 | `gogenconf version` | No flags | Build version, commit, and date; dev/none/unknown for development builds. |
 
 ```sh
@@ -501,6 +549,9 @@ gogenconf format --write service.conf
 gogenconf validate service.conf
 gogenconf expr format 'from_file(from_env(CREDENTIAL_FILE))'
 gogenconf expr validate 'from_json_file(from_env(CONFIG_FILE), .auth.token)'
+gogenconf template layout
+gogenconf template export --output ./templates
+gogenconf template export --as-txtar > templates.txtar
 ```
 
 `--write` requires a regular input file, rejects symlinks/stdin, preserves its
