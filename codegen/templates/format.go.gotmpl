@@ -17,8 +17,16 @@ func Format(d *Document) string {
 	write = func(items []Item, indent string) {
 		for _, item := range items {
 			switch v := item.(type) {
+			case Header:
+				if d.Identity != "" {
+					fmt.Fprintf(&b, "config for %s version %d\n", d.Identity, d.Version)
+				} else if d.HasVersion {
+					fmt.Fprintf(&b, "config_version %d\n", d.Version)
+				}
 			case Version:
-				if d.HasVersion {
+				if d.Identity != "" {
+					fmt.Fprintf(&b, "config for %s version %d\n", d.Identity, d.Version)
+				} else if d.HasVersion {
 					fmt.Fprintf(&b, "config_version %d\n", d.Version)
 				}
 			case *Section:
@@ -57,14 +65,18 @@ func Format(d *Document) string {
 	version, sections := false, false
 	for _, i := range d.Items {
 		switch i.(type) {
-		case Version:
+		case Header, Version:
 			version = true
 		case *Section:
 			sections = true
 		}
 	}
 	if d.HasVersion && !version {
-		fmt.Fprintf(&b, "config_version %d\n", d.Version)
+		if d.Identity != "" {
+			fmt.Fprintf(&b, "config for %s version %d\n", d.Identity, d.Version)
+		} else {
+			fmt.Fprintf(&b, "config_version %d\n", d.Version)
+		}
 	}
 	write(d.Items, "")
 	if !sections {
