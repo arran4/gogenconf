@@ -14,12 +14,12 @@ const cliTestSchema = `config for downloadsd-schema version 1
 
 section service
     host string
-    port int
+    port string
 end
 
 section database
     dsn string
-    max_connections int
+    max_connections string
 end
 `
 

@@ -16,8 +16,8 @@ const projectSampleSchema = `config for downloadsd-schema version 1
 
 section service
     host string
-    port int
-    max_retries int
+    port string
+    max_retries string
 end
 
 section storage

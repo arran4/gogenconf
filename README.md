@@ -535,8 +535,11 @@ supports `--help`/`-h`; root help describes the architecture and documentation.
 | --- | --- | --- |
 | `gogenconf generate [FILE]` | `--schema`, `--out`, `--pkg`, `--check`, `--clean`, `--runtime`, `--sample` | Generate strongly typed Go models, binders, and runtime artifacts from a schema. |
 | `gogenconf plan [FILE]` | `--schema`, `--out`, `--pkg`, `--json`, `--runtime`, `--sample` | Inspect deterministic multi-file generation plan without modifying disk. |
+| `gogenconf schema list [FILE]` | `--schema`, `--json` | Inspect schema sections, fields, Go types, defaults, and policies (alias: `gogenconf list`). |
+| `gogenconf schema validate [FILE]` | `--schema` | Validate schema structure and Go mappings against generator constraints without emitting code. |
+| `gogenconf schema plan [FILE]` | `--schema`, `--out`, `--pkg`, `--json`, `--runtime`, `--sample` | Inspect generation plan (alias for `gogenconf plan`). |
 | `gogenconf format [FILE]` | FILE defaults to `-` (stdin); `--write`, `--check` default false | Canonical stdout, atomic in-place write, or noncanonical check. |
-| `gogenconf validate [FILE]` | FILE defaults to stdin | Syntax/structure only, silent success. |
+| `gogenconf validate [FILE]` | FILE defaults to stdin | Native syntax/structure only, silent success. |
 | `gogenconf expr format [EXPRESSION]` | Omitted or `-` reads stdin | Canonical expression, no resolution. |
 | `gogenconf expr validate [EXPRESSION]` | Omitted or `-` reads stdin | Expression grammar only, silent success. |
 | `gogenconf template layout` | No flags | Display built-in template layout, capabilities, and target files. |
@@ -550,10 +553,17 @@ gogenconf generate --schema schema.conf --out ./config
 # Verify generation is up to date in CI without writing files:
 gogenconf generate --check --schema schema.conf --out ./config
 
+# Inspect schema fields, Go types, and defaults:
+gogenconf schema list --schema schema.conf
+gogenconf list schema.conf --json
+
+# Validate schema structure without writing files:
+gogenconf schema validate schema.conf
+
 # Inspect planned files and capabilities:
 gogenconf plan --schema schema.conf --json
 
-# Format and validate syntax:
+# Format and validate configuration document syntax:
 gogenconf format service.conf
 cat service.conf | gogenconf format
 gogenconf format --check service.conf
