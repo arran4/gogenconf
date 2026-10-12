@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 )
 
 // GeneratedFile represents a single generated source artifact.
@@ -34,14 +33,15 @@ func (fs FileSet) WriteToDir(dir string) error {
 		return fmt.Errorf("create directory %s: %w", dir, err)
 	}
 
-	// 1. Safety verification: ensure no user-authored extension files would be overwritten without permission
+	// 1. Safety verification: ensure no user-authored extension files or symlinks would be overwritten without permission
 	for _, f := range fs {
 		dest := filepath.Join(dir, f.Name)
-		if !strings.HasSuffix(f.Name, "_generated.go") {
-			if info, err := os.Stat(dest); err == nil && !info.IsDir() {
-				if !isGeneratedByGogenconf(dest) {
-					return fmt.Errorf("refusing to overwrite user-authored or conflicting file %q (missing gogenconf generated header)", dest)
-				}
+		if info, err := os.Lstat(dest); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("refusing to write to unsafe symlink destination %q", dest)
+			}
+			if !info.IsDir() && !isGeneratedByGogenconf(dest) {
+				return fmt.Errorf("refusing to overwrite user-authored or conflicting file %q (missing gogenconf generated header)", dest)
 			}
 		}
 	}
