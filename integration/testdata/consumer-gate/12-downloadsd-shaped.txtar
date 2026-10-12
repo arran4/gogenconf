@@ -1,0 +1,125 @@
+Case: downloadsd-shaped multi-account configuration with lazy provider credentials and sanitized paths
+
+-- options.json --
+{"scenario":"downloadsd-shaped"}
+
+-- schema.json --
+{
+  "version": 1,
+  "sections": [
+    {
+      "name": "storage",
+      "go_name": "Storage",
+      "go_type": "StorageConfig",
+      "fields": [
+        {"key": "download_dir", "go_name": "DownloadDir", "go_type": "SanitizedPath", "default": "./downloads"},
+        {"key": "max_concurrent", "go_name": "MaxConcurrent", "go_type": "int", "default": "5"}
+      ]
+    },
+    {
+      "name": "account",
+      "go_name": "Accounts",
+      "go_type": "AccountConfig",
+      "repeated": true,
+      "fields": [
+        {"key": "provider", "go_name": "Provider", "go_type": "string", "required": true},
+        {"key": "endpoint", "go_name": "Endpoint", "go_type": "string", "default": "https://api.downloads.test"},
+        {"key": "api_key", "go_name": "APIKey", "go_type": "string", "policy": "provider", "sensitive": true, "required": true}
+      ]
+    }
+  ]
+}
+
+-- input/appconfig/custom_types.go --
+package appconfig
+
+import (
+	"fmt"
+	"path/filepath"
+	"strings"
+)
+
+type SanitizedPath string
+
+func (p *SanitizedPath) SanitizeConfig() error {
+	cleaned := filepath.Clean(string(*p))
+	if strings.HasPrefix(cleaned, "/") {
+		return fmt.Errorf("absolute paths not allowed: %s", cleaned)
+	}
+	*p = SanitizedPath(cleaned)
+	return nil
+}
+
+-- input/config.conf --
+config_version 1
+
+section storage
+    download_dir var/data/incoming
+    max_concurrent 10
+end
+
+section account usenet-premium
+    provider usenet
+    endpoint https://usenet.downloads.test:443
+    api_key premium-usenet-secret-key-12345
+end
+
+section account mega-backup
+    provider mega
+    endpoint https://mega.downloads.test:443
+    api_key mega-backup-secret-key-67890
+end
+
+-- input/main.go --
+package main
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"consumer.test/app/appconfig"
+)
+
+func main() {
+	ctx := context.Background()
+	cfg, doc, err := appconfig.LoadFile(ctx, "config.conf")
+	if err != nil {
+		panic(err)
+	}
+
+	// 1. Verify storage settings
+	if cfg.Storage.DownloadDir != "var/data/incoming" || cfg.Storage.MaxConcurrent != 10 {
+		panic("storage configuration mismatch")
+	}
+
+	// 2. Verify account resolution and lazy provider credentials
+	if len(cfg.Accounts) != 2 {
+		panic("expected 2 accounts")
+	}
+
+	for _, acct := range cfg.Accounts {
+		keyVal, err := acct.APIKey.Resolve(ctx)
+		if err != nil {
+			panic(fmt.Sprintf("failed to resolve api key for %s: %v", acct.Name, err))
+		}
+		if !strings.HasSuffix(keyVal, "-12345") && !strings.HasSuffix(keyVal, "-67890") {
+			panic("unexpected api key value")
+		}
+	}
+
+	// 3. Inspect document and verify diagnostics do not leak secrets
+	inspected := appconfig.InspectString(doc)
+	if strings.Contains(inspected, "premium-usenet-secret-key-12345") || strings.Contains(inspected, "mega-backup-secret-key-67890") {
+		panic("credentials leaked into inspected document")
+	}
+	if !strings.Contains(inspected, "[REDACTED]") {
+		panic("expected [REDACTED] in inspected document")
+	}
+
+	fmt.Printf("downloadsd: accounts=%d, dir=%s, concurrent=%d, secrets_resolved=true, redacted=true\n",
+		len(cfg.Accounts), cfg.Storage.DownloadDir, cfg.Storage.MaxConcurrent)
+}
+
+-- expected/stdout.txt --
+downloadsd: accounts=2, dir=var/data/incoming, concurrent=10, secrets_resolved=true, redacted=true

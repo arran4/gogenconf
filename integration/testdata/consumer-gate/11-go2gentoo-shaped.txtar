@@ -1,0 +1,106 @@
+Case: go2gentoo-shaped multi-project configuration with legacy CSV flags and path provenance
+
+-- options.json --
+{"scenario":"go2gentoo-shaped"}
+
+-- schema.json --
+{
+  "version": 1,
+  "sections": [
+    {
+      "name": "gentoo",
+      "go_name": "Gentoo",
+      "go_type": "GentooConfig",
+      "fields": [
+        {"key": "overlay_path", "go_name": "OverlayPath", "go_type": "string", "default": "./var/overlay"},
+        {"key": "arch", "go_name": "Arch", "go_type": "string", "default": "amd64"}
+      ]
+    },
+    {
+      "name": "package",
+      "go_name": "Packages",
+      "go_type": "PackageConfig",
+      "repeated": true,
+      "fields": [
+        {"key": "category", "go_name": "Category", "go_type": "string", "required": true},
+        {"key": "slot", "go_name": "Slot", "go_type": "string", "default": "0"},
+        {"key": "use_flags", "go_name": "UseFlags", "go_type": "CSVFlags", "default": "cgo"}
+      ]
+    }
+  ]
+}
+
+-- input/appconfig/custom_types.go --
+package appconfig
+
+import (
+	"strings"
+)
+
+// CSVFlags decodes a comma-separated legacy flag list into typed slice.
+type CSVFlags []string
+
+func (f *CSVFlags) DecodeConfig(val string) error {
+	parts := strings.Split(val, ",")
+	res := make([]string, 0, len(parts))
+	for _, p := range parts {
+		trimmed := strings.TrimSpace(p)
+		if trimmed != "" {
+			res = append(res, trimmed)
+		}
+	}
+	*f = res
+	return nil
+}
+
+-- input/config.conf --
+config_version 1
+
+section gentoo
+    overlay_path ../portage/overlay
+    arch arm64
+end
+
+section package app-misc/foo
+    category app-misc
+    slot 1
+    use_flags cgo, netgo, static
+end
+
+section package dev-lang/bar
+    category dev-lang
+    slot 0
+    use_flags bootstrap
+end
+
+-- input/main.go --
+package main
+
+import (
+	"context"
+	"fmt"
+	"path/filepath"
+
+	"consumer.test/app/appconfig"
+)
+
+func main() {
+	ctx := context.Background()
+	cfg, _, err := appconfig.LoadFile(ctx, "config.conf")
+	if err != nil {
+		panic(err)
+	}
+
+	cleanOverlay := filepath.Clean(cfg.Gentoo.OverlayPath)
+	fmt.Printf("go2gentoo: arch=%s, overlay=%s, pkgs=%d\n",
+		cfg.Gentoo.Arch, cleanOverlay, len(cfg.Packages))
+	for _, pkg := range cfg.Packages {
+		fmt.Printf("pkg: name=%s, cat=%s, slot=%s, flags=%v\n",
+			pkg.Name, pkg.Category, pkg.Slot, []string(pkg.UseFlags))
+	}
+}
+
+-- expected/stdout.txt --
+go2gentoo: arch=arm64, overlay=../portage/overlay, pkgs=2
+pkg: name=app-misc/foo, cat=app-misc, slot=1, flags=[cgo netgo static]
+pkg: name=dev-lang/bar, cat=dev-lang, slot=0, flags=[bootstrap]
