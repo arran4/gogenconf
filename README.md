@@ -535,6 +535,7 @@ supports `--help`/`-h`; root help describes the architecture and documentation.
 | --- | --- | --- |
 | `gogenconf generate [FILE]` | `--schema`, `--out`, `--pkg`, `--check`, `--clean`, `--runtime`, `--sample` | Generate strongly typed Go models, binders, and runtime artifacts from a schema. |
 | `gogenconf plan [FILE]` | `--schema`, `--out`, `--pkg`, `--json`, `--runtime`, `--sample` | Inspect deterministic multi-file generation plan without modifying disk. |
+| `gogenconf doc [FILE]` | `--schema`, `--out`, `--markdown`, `--man`, `--sample`, `--check`, `--app` | Generate Markdown reference docs, section 5 Unix man page, and sample config (alias: `gogenconf schema doc`). |
 | `gogenconf schema list [FILE]` | `--schema`, `--json` | Inspect schema sections, fields, Go types, defaults, and policies (alias: `gogenconf list`). |
 | `gogenconf schema validate [FILE]` | `--schema` | Validate schema structure and Go mappings against generator constraints without emitting code. |
 | `gogenconf schema plan [FILE]` | `--schema`, `--out`, `--pkg`, `--json`, `--runtime`, `--sample` | Inspect generation plan (alias for `gogenconf plan`). |
@@ -552,6 +553,12 @@ gogenconf generate --schema schema.conf --out ./config
 
 # Verify generation is up to date in CI without writing files:
 gogenconf generate --check --schema schema.conf --out ./config
+
+# Generate Markdown reference docs and section 5 man page:
+gogenconf doc --schema schema.conf --out ./docs --markdown --man --sample
+
+# Verify documentation on disk is up to date:
+gogenconf doc --check --schema schema.conf --out ./docs --markdown --man
 
 # Inspect schema fields, Go types, and defaults:
 gogenconf schema list --schema schema.conf
