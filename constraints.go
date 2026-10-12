@@ -197,7 +197,14 @@ func (p *PolicyEnvelope) Enforce(effective *Document, layers []SourceLayer) erro
 			}
 
 		case ConstraintKindAllowedStrings:
-			stringsToCheck := extractStrings(val)
+			stringsToCheck, err := extractStrings(val)
+			if err != nil {
+				return &ConfigError{
+					Stage:  StageValidate,
+					Source: span,
+					Err:    fmt.Errorf("policy constraint %q validation failed: %w", c.Path, err),
+				}
+			}
 			allowedMap := make(map[string]bool, len(c.StringList))
 			for _, s := range c.StringList {
 				allowedMap[s] = true
@@ -218,7 +225,14 @@ func (p *PolicyEnvelope) Enforce(effective *Document, layers []SourceLayer) erro
 			}
 
 		case ConstraintKindDeniedStrings:
-			stringsToCheck := extractStrings(val)
+			stringsToCheck, err := extractStrings(val)
+			if err != nil {
+				return &ConfigError{
+					Stage:  StageValidate,
+					Source: span,
+					Err:    fmt.Errorf("policy constraint %q validation failed: %w", c.Path, err),
+				}
+			}
 			deniedMap := make(map[string]bool, len(c.StringList))
 			for _, s := range c.StringList {
 				deniedMap[s] = true
@@ -263,7 +277,7 @@ func extractInt(e Expr) (int64, error) {
 	return 0, fmt.Errorf("expected numeric literal, got %T", e)
 }
 
-func extractStrings(e Expr) []string {
+func extractStrings(e Expr) ([]string, error) {
 	var result []string
 	switch v := e.(type) {
 	case Literal:
@@ -274,16 +288,26 @@ func extractStrings(e Expr) []string {
 		}
 	case List:
 		for _, item := range v.Items {
-			result = append(result, extractStrings(item)...)
+			sub, err := extractStrings(item)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, sub...)
 		}
 	case *List:
 		if v != nil {
 			for _, item := range v.Items {
-				result = append(result, extractStrings(item)...)
+				sub, err := extractStrings(item)
+				if err != nil {
+					return nil, err
+				}
+				result = append(result, sub...)
 			}
 		}
+	default:
+		return nil, fmt.Errorf("unsupported expression shape %T in protected policy constraint", e)
 	}
-	return result
+	return result, nil
 }
 
 // ComposeWithPolicy executes layer composition and verifies trusted policy constraints.
