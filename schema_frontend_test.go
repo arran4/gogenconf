@@ -309,6 +309,41 @@ end
 `,
 			errSub: "unknown field metadata",
 		},
+		{
+			name: "invalid Go type in field",
+			input: `config for myapp-schema version 1
+version 1
+section server
+    section field host 123invalid
+    end
+end
+`,
+			errSub: "invalid Go type",
+		},
+		{
+			name: "invalid numeric default",
+			input: `config for myapp-schema version 1
+version 1
+section server
+    section field port int
+        default "not_a_number"
+    end
+end
+`,
+			errSub: "invalid numeric default",
+		},
+		{
+			name: "invalid policy value",
+			input: `config for myapp-schema version 1
+version 1
+section server
+    section field host string
+        policy "unsupported_policy"
+    end
+end
+`,
+			errSub: "invalid resolution policy",
+		},
 	}
 
 	for _, tc := range cases {
@@ -321,5 +356,76 @@ end
 				t.Fatalf("expected error containing %q, got %v", tc.errSub, err)
 			}
 		})
+	}
+}
+
+func TestParseSchemaBraceSyntax(t *testing.T) {
+	input := `config for app-schema version 1
+
+version 1
+
+server {
+    go_type ServerConfig
+    ## Server configuration
+
+    host string {
+        default "0.0.0.0"
+        required true
+    }
+
+    port int {
+        default 8080
+    }
+
+    tags {
+        go_type "[]string"
+        default [ "web", "api" ]
+    }
+
+    routes "[$]string" {
+        default { home: "/index", api: "/v1" }
+    }
+}
+`
+	s, err := gogenconf.ParseSchema(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ParseSchema failed for brace syntax: %v", err)
+	}
+
+	if len(s.Sections) != 1 {
+		t.Fatalf("expected 1 section, got %d", len(s.Sections))
+	}
+	sec := s.Sections[0]
+	if sec.Name != "server" || sec.GoType != "ServerConfig" {
+		t.Errorf("section mismatch: %s / %s", sec.Name, sec.GoType)
+	}
+	if len(sec.Fields) != 4 {
+		t.Fatalf("expected 4 fields, got %d", len(sec.Fields))
+	}
+
+	fHost := sec.Fields[0]
+	if fHost.Key != "host" || fHost.GoType != "string" || !fHost.Required {
+		t.Errorf("fHost mismatch: %+v", fHost)
+	}
+	if lit, ok := fHost.Default.(gogenconf.Literal); !ok || lit.Value != "0.0.0.0" {
+		t.Errorf("fHost default mismatch: %v", fHost.Default)
+	}
+
+	fPort := sec.Fields[1]
+	if fPort.Key != "port" || fPort.GoType != "int" {
+		t.Errorf("fPort mismatch: %+v", fPort)
+	}
+	if lit, ok := fPort.Default.(gogenconf.Literal); !ok || lit.Value != "8080" {
+		t.Errorf("fPort default mismatch: %v", fPort.Default)
+	}
+
+	fTags := sec.Fields[2]
+	if fTags.Key != "tags" || fTags.GoType != "[]string" {
+		t.Errorf("fTags mismatch: %+v", fTags)
+	}
+
+	fRoutes := sec.Fields[3]
+	if fRoutes.Key != "routes" || fRoutes.GoType != "[$]string" {
+		t.Errorf("fRoutes mismatch: %+v", fRoutes)
 	}
 }

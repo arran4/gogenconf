@@ -148,10 +148,19 @@ func parseSectionDefinition(sec *Section) (SectionDefinition, error) {
 					}
 				}
 			default:
-				return secDef, &ConfigError{
-					Stage:  StageValidate,
-					Source: v.Span,
-					Err:    fmt.Errorf("unknown section metadata %q", v.Key),
+				// Compact field declaration: <key> <go_type>
+				if lit, ok := v.Value.(Literal); ok && identifier(v.Key) && isValidGoType(lit.Value) {
+					secDef.Fields = append(secDef.Fields, Field{
+						Key:    v.Key,
+						GoName: exportIdentifier(v.Key),
+						GoType: lit.Value,
+					})
+				} else {
+					return secDef, &ConfigError{
+						Stage:  StageValidate,
+						Source: v.Span,
+						Err:    fmt.Errorf("unknown section metadata %q", v.Key),
+					}
 				}
 			}
 		case *Section:
@@ -172,17 +181,38 @@ func parseFieldDefinition(sec *Section) (Field, error) {
 		name = strings.TrimPrefix(name, "field ")
 	}
 
+	var key, goType string
+	items := make([]Item, len(sec.Items))
+	copy(items, sec.Items)
+
 	fields := strings.Fields(name)
-	if len(fields) < 2 {
-		return Field{}, &ConfigError{
-			Stage:  StageValidate,
-			Source: sec.Span,
-			Err:    fmt.Errorf("field declaration requires key and Go type: %q", sec.Name),
+	if len(fields) >= 2 {
+		key = fields[0]
+		goType = fields[1]
+	} else if len(fields) == 1 {
+		if fields[0] == "field" && len(sec.Sections) > 0 {
+			child := sec.Sections[0]
+			childFields := strings.Fields(child.Name)
+			if len(childFields) >= 2 {
+				key = childFields[0]
+				goType = childFields[1]
+				items = append(items, child.Items...)
+			} else if len(childFields) == 1 {
+				key = childFields[0]
+				if len(child.Sections) > 0 && isValidGoType(child.Sections[0].Name) {
+					goType = child.Sections[0].Name
+					items = append(items, child.Sections[0].Items...)
+				}
+				items = append(items, child.Items...)
+			}
+		} else {
+			key = fields[0]
+			if len(sec.Sections) > 0 && isValidGoType(sec.Sections[0].Name) {
+				goType = sec.Sections[0].Name
+				items = append(items, sec.Sections[0].Items...)
+			}
 		}
 	}
-
-	key := fields[0]
-	goType := fields[1]
 
 	f := Field{
 		Key:    key,
@@ -190,7 +220,7 @@ func parseFieldDefinition(sec *Section) (Field, error) {
 		GoType: goType,
 	}
 
-	for _, item := range sec.Items {
+	for _, item := range items {
 		switch v := item.(type) {
 		case Comment:
 			if v.Kind == DocumentationComment && v.Text != "" {
@@ -202,7 +232,7 @@ func parseFieldDefinition(sec *Section) (Field, error) {
 				if lit, ok := v.Value.(Literal); ok {
 					f.GoName = lit.Value
 				}
-			case "go_type":
+			case "go_type", "type":
 				if lit, ok := v.Value.(Literal); ok {
 					f.GoType = lit.Value
 				}
@@ -246,6 +276,13 @@ func parseFieldDefinition(sec *Section) (Field, error) {
 				f.Deprecated = b
 			case "policy":
 				if lit, ok := v.Value.(Literal); ok {
+					if lit.Value != "" && lit.Value != string(ProviderBacked) {
+						return f, &ConfigError{
+							Stage:  StageValidate,
+							Source: v.Span,
+							Err:    fmt.Errorf("invalid resolution policy %q: expected %q", lit.Value, ProviderBacked),
+						}
+					}
 					f.Policy = ResolutionPolicy(lit.Value)
 				}
 			case "env":
@@ -268,7 +305,107 @@ func parseFieldDefinition(sec *Section) (Field, error) {
 		}
 	}
 
+	if f.Key == "" || f.GoType == "" {
+		return Field{}, &ConfigError{
+			Stage:  StageValidate,
+			Source: sec.Span,
+			Err:    fmt.Errorf("field declaration requires key and Go type: %q", sec.Name),
+		}
+	}
+	if !isValidGoType(f.GoType) {
+		return Field{}, &ConfigError{
+			Stage:  StageValidate,
+			Source: sec.Span,
+			Err:    fmt.Errorf("invalid Go type %q for field %q", f.GoType, f.Key),
+		}
+	}
+	if f.Default != nil {
+		if err := validateFieldDefault(f, sec.Span); err != nil {
+			return f, err
+		}
+	}
+
 	return f, nil
+}
+
+func validateFieldDefault(f Field, span Span) error {
+	if f.Default == nil {
+		return nil
+	}
+	elem, kind := ParseType(f.GoType)
+	switch kind {
+	case CollectionOrdered:
+		switch v := f.Default.(type) {
+		case List:
+			for _, item := range v.Items {
+				if err := validateScalarDefault(elem, item, span); err != nil {
+					return err
+				}
+			}
+		case Literal:
+			return validateScalarDefault(elem, v, span)
+		default:
+			return &ConfigError{
+				Stage:  StageValidate,
+				Source: span,
+				Err:    fmt.Errorf("invalid default for ordered collection %q: expected list, got %T", f.Key, f.Default),
+			}
+		}
+	case CollectionKeyed:
+		switch v := f.Default.(type) {
+		case Map:
+			for _, entry := range v.Entries {
+				if err := validateScalarDefault(elem, entry.Value, entry.Span); err != nil {
+					return err
+				}
+			}
+		default:
+			return &ConfigError{
+				Stage:  StageValidate,
+				Source: span,
+				Err:    fmt.Errorf("invalid default for keyed collection %q: expected map, got %T", f.Key, f.Default),
+			}
+		}
+	default:
+		return validateScalarDefault(f.GoType, f.Default, span)
+	}
+	return nil
+}
+
+func validateScalarDefault(goType string, val Expr, span Span) error {
+	lit, ok := val.(Literal)
+	if !ok {
+		return nil
+	}
+	switch goType {
+	case "int", "int64", "int32", "uint", "uint64", "uint32":
+		if _, err := strconv.ParseInt(lit.Value, 10, 64); err != nil {
+			if _, err2 := strconv.ParseUint(lit.Value, 10, 64); err2 != nil {
+				return &ConfigError{
+					Stage:  StageValidate,
+					Source: span,
+					Err:    fmt.Errorf("invalid numeric default %q for type %s: %w", lit.Value, goType, err),
+				}
+			}
+		}
+	case "bool":
+		if _, err := parseBoolExpr(lit, span); err != nil {
+			return &ConfigError{
+				Stage:  StageValidate,
+				Source: span,
+				Err:    fmt.Errorf("invalid boolean default %q: %w", lit.Value, err),
+			}
+		}
+	case "float64", "float32":
+		if _, err := strconv.ParseFloat(lit.Value, 64); err != nil {
+			return &ConfigError{
+				Stage:  StageValidate,
+				Source: span,
+				Err:    fmt.Errorf("invalid float default %q for type %s: %w", lit.Value, goType, err),
+			}
+		}
+	}
+	return nil
 }
 
 func parseBoolExpr(e Expr, span Span) (bool, error) {
@@ -396,4 +533,16 @@ func FormatSchema(identity string, s *Schema) string {
 	}
 
 	return b.String()
+}
+
+func isValidGoType(t string) bool {
+	if t == "true" || t == "false" || t == "" {
+		return false
+	}
+	elem, _ := ParseType(t)
+	if elem == "" || elem == "true" || elem == "false" {
+		return false
+	}
+	first := rune(elem[0])
+	return first == '*' || unicode.IsLetter(first) || first == '_'
 }
