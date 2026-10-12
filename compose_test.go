@@ -631,3 +631,292 @@ end
 		t.Errorf("sub_a.f2 = %v; want fresh", subA_f2)
 	}
 }
+
+func TestComposeGo2GentooShaped(t *testing.T) {
+	baseText := `config for go2gentoo version 1
+
+repository {
+    name gentoo
+    overlay_path "./var/overlay"
+}
+
+project lxa {
+    module_path "github.com/arran4/lxa"
+    category app-misc
+    package_name lxa
+    version "v1.0.0"
+    arch [ "amd64", "arm64" ]
+    checksum_file "dist/lxa.sha256"
+
+    build {
+        target ./cmd/lxa
+        cgo "false"
+    }
+}
+
+project runner {
+    module_path "github.com/arran4/runner"
+    category sys-apps
+    package_name runner
+    version "v0.5.0"
+    arch [ "amd64" ]
+
+    build {
+        target ./cmd/runner
+    }
+}
+`
+
+	overrideText := `config for go2gentoo version 1
+
+[~] repository {
+    overlay_path "/etc/portage/overlay"
+}
+
+[~] project lxa {
+    [+] arch [ "riscv64" ]
+    [~] build {
+        target ./cmd/lxa-v2
+    }
+}
+
+[-] project runner {
+}
+
+[+] project worker {
+    module_path "github.com/arran4/worker"
+    category app-misc
+    package_name worker
+    version "v2.1.0"
+    arch [ "amd64" ]
+
+    build {
+        target ./cmd/worker
+    }
+}
+`
+
+	baseDoc, err := gogenconf.ParseNamed(strings.NewReader(baseText), "00-base.conf")
+	if err != nil {
+		t.Fatalf("ParseNamed baseDoc failed: %v", err)
+	}
+	overrideDoc, err := gogenconf.ParseNamed(strings.NewReader(overrideText), "99-user.conf")
+	if err != nil {
+		t.Fatalf("ParseNamed overrideDoc failed: %v", err)
+	}
+
+	effective, err := gogenconf.Compose([]gogenconf.SourceLayer{
+		{Name: "base", Document: baseDoc, Priority: gogenconf.PriorityDefault, Order: 0},
+		{Name: "override", Document: overrideDoc, Priority: gogenconf.PriorityUser, Order: 0},
+	}, gogenconf.CompositionOptions{
+		ExpectedIdentity: "go2gentoo",
+		MaxVersion:       1,
+	})
+	if err != nil {
+		t.Fatalf("Compose failed: %v", err)
+	}
+
+	// 1. repository.overlay_path mutated, repository.name preserved
+	overlayPath := effective.PathValue("repository", "overlay_path")
+	if lit, ok := overlayPath.(gogenconf.Literal); !ok || lit.Value != "/etc/portage/overlay" {
+		t.Errorf("repository.overlay_path = %v, want /etc/portage/overlay", overlayPath)
+	}
+	repoName := effective.PathValue("repository", "name")
+	if lit, ok := repoName.(gogenconf.Literal); !ok || lit.Value != "gentoo" {
+		t.Errorf("repository.name = %v, want gentoo", repoName)
+	}
+
+	// 2. project lxa: arch list appended with riscv64
+	archVal := effective.PathValue("project", "lxa", "arch")
+	archList, ok := archVal.(gogenconf.List)
+	if !ok || len(archList.Items) != 3 {
+		t.Fatalf("project lxa arch = %v, want 3 items", archVal)
+	}
+	if archList.Items[2].(gogenconf.Literal).Value != "riscv64" {
+		t.Errorf("project lxa arch[2] = %v, want riscv64", archList.Items[2])
+	}
+
+	// 3. project lxa: build.target mutated to ./cmd/lxa-v2, build.cgo preserved as "false"
+	buildTarget := effective.PathValue("project", "lxa", "build", "target")
+	if lit, ok := buildTarget.(gogenconf.Literal); !ok || lit.Value != "./cmd/lxa-v2" {
+		t.Errorf("project lxa build.target = %v, want ./cmd/lxa-v2", buildTarget)
+	}
+	buildCgo := effective.PathValue("project", "lxa", "build", "cgo")
+	if lit, ok := buildCgo.(gogenconf.Literal); !ok || lit.Value != "false" {
+		t.Errorf("project lxa build.cgo = %v, want false", buildCgo)
+	}
+
+	// 4. project runner deleted via [-]
+	if runnerSec := effective.SectionPath("project", "runner"); runnerSec != nil {
+		t.Errorf("project runner should have been deleted by [-], but found: %v", runnerSec)
+	}
+
+	// 5. project worker added via [+]
+	workerSec := effective.SectionPath("project", "worker")
+	if workerSec == nil {
+		t.Fatalf("project worker should have been added by [+], but not found")
+	}
+	workerPkg := effective.PathValue("project", "worker", "package_name")
+	if lit, ok := workerPkg.(gogenconf.Literal); !ok || lit.Value != "worker" {
+		t.Errorf("project worker package_name = %v, want worker", workerPkg)
+	}
+
+	// 6. Strict project identity validation: separate CGo mapping document
+	cgoBaseText := `config for cgo-mappings version 1
+
+mapping lxa {
+    cgo_enabled "true"
+    cflags [ "-O2", "-g" ]
+    ldflags [ "-s", "-w" ]
+}
+`
+	cgoOverrideText := `config for cgo-mappings version 1
+
+[~] mapping lxa {
+    [+] cflags [ "-march=native" ]
+}
+`
+	cgoBaseDoc, err := gogenconf.ParseNamed(strings.NewReader(cgoBaseText), "cgo-base.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cgoOverrideDoc, err := gogenconf.ParseNamed(strings.NewReader(cgoOverrideText), "cgo-override.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Incompatible identity rejected when mixed with go2gentoo
+	_, err = gogenconf.Compose([]gogenconf.SourceLayer{
+		{Name: "go2gentoo-base", Document: baseDoc, Priority: gogenconf.PriorityDefault, Order: 0},
+		{Name: "cgo-override", Document: cgoOverrideDoc, Priority: gogenconf.PriorityUser, Order: 0},
+	}, gogenconf.CompositionOptions{
+		ExpectedIdentity: "go2gentoo",
+		MaxVersion:       1,
+	})
+	if err == nil {
+		t.Fatal("expected Compose to fail on mismatched identity between go2gentoo and cgo-mappings, got nil")
+	}
+
+	// Composing cgo-mappings independently succeeds
+	cgoEffective, err := gogenconf.Compose([]gogenconf.SourceLayer{
+		{Name: "cgo-base", Document: cgoBaseDoc, Priority: gogenconf.PriorityDefault, Order: 0},
+		{Name: "cgo-override", Document: cgoOverrideDoc, Priority: gogenconf.PriorityUser, Order: 0},
+	}, gogenconf.CompositionOptions{
+		ExpectedIdentity: "cgo-mappings",
+		MaxVersion:       1,
+	})
+	if err != nil {
+		t.Fatalf("Compose cgo-mappings failed: %v", err)
+	}
+	cflagsVal := cgoEffective.PathValue("mapping", "lxa", "cflags")
+	cflagsList, ok := cflagsVal.(gogenconf.List)
+	if !ok || len(cflagsList.Items) != 3 {
+		t.Fatalf("mapping lxa cflags = %v, want 3 items", cflagsVal)
+	}
+	if cflagsList.Items[2].(gogenconf.Literal).Value != "-march=native" {
+		t.Errorf("mapping lxa cflags[2] = %v, want -march=native", cflagsList.Items[2])
+	}
+}
+
+func TestComposeCanonicalDeclarationAttachedSyntax(t *testing.T) {
+	baseText := `config for go2gentoo version 1
+
+repository {
+    name gentoo
+    overlay_path "./var/overlay"
+}
+
+project lxa {
+    module_path "github.com/arran4/lxa"
+    arch [ "amd64", "arm64" ]
+
+    build {
+        target ./cmd/lxa
+        cgo "false"
+    }
+}
+
+project runner {
+    module_path "github.com/arran4/runner"
+}
+`
+
+	// Canonical declaration-attached syntax per Issue #25
+	canonicalOverrideText := `config for go2gentoo version 1
+
+repository[~] {
+    overlay_path[=] "/etc/portage/overlay"
+}
+
+project[~] lxa {
+    arch[+] [ "riscv64" ]
+    build[~] {
+        target[=] ./cmd/lxa-v2
+    }
+}
+
+project runner[-] {
+}
+
+project[+] worker {
+    module_path "github.com/arran4/worker"
+}
+`
+
+	baseDoc, err := gogenconf.ParseNamed(strings.NewReader(baseText), "base.conf")
+	if err != nil {
+		t.Fatalf("parse base failed: %v", err)
+	}
+	overrideDoc, err := gogenconf.ParseNamed(strings.NewReader(canonicalOverrideText), "override.conf")
+	if err != nil {
+		t.Fatalf("parse canonical override failed: %v", err)
+	}
+
+	effective, err := gogenconf.Compose([]gogenconf.SourceLayer{
+		{Name: "base", Document: baseDoc, Priority: gogenconf.PriorityDefault, Order: 0},
+		{Name: "override", Document: overrideDoc, Priority: gogenconf.PriorityUser, Order: 0},
+	}, gogenconf.CompositionOptions{
+		ExpectedIdentity: "go2gentoo",
+		MaxVersion:       1,
+	})
+	if err != nil {
+		t.Fatalf("compose failed: %v", err)
+	}
+
+	// 1. repository.overlay_path updated to "/etc/portage/overlay", name preserved
+	if lit, ok := effective.PathValue("repository", "overlay_path").(gogenconf.Literal); !ok || lit.Value != "/etc/portage/overlay" {
+		t.Errorf("overlay_path = %v, want /etc/portage/overlay", effective.PathValue("repository", "overlay_path"))
+	}
+	if lit, ok := effective.PathValue("repository", "name").(gogenconf.Literal); !ok || lit.Value != "gentoo" {
+		t.Errorf("name = %v, want gentoo", effective.PathValue("repository", "name"))
+	}
+
+	// 2. project lxa arch appended with riscv64
+	archVal := effective.PathValue("project", "lxa", "arch")
+	archList, ok := archVal.(gogenconf.List)
+	if !ok || len(archList.Items) != 3 {
+		t.Fatalf("arch = %v, want 3 items", archVal)
+	}
+	if archList.Items[2].(gogenconf.Literal).Value != "riscv64" {
+		t.Errorf("arch[2] = %v, want riscv64", archList.Items[2])
+	}
+
+	// 3. project lxa build target updated, cgo preserved
+	if lit, ok := effective.PathValue("project", "lxa", "build", "target").(gogenconf.Literal); !ok || lit.Value != "./cmd/lxa-v2" {
+		t.Errorf("build.target = %v, want ./cmd/lxa-v2", effective.PathValue("project", "lxa", "build", "target"))
+	}
+	if lit, ok := effective.PathValue("project", "lxa", "build", "cgo").(gogenconf.Literal); !ok || lit.Value != "false" {
+		t.Errorf("build.cgo = %v, want false", effective.PathValue("project", "lxa", "build", "cgo"))
+	}
+
+	// 4. project runner deleted via [-]
+	if sec := effective.SectionPath("project", "runner"); sec != nil {
+		t.Errorf("project runner should be deleted, got %v", sec)
+	}
+
+	// 5. project worker added via [+]
+	if sec := effective.SectionPath("project", "worker"); sec == nil {
+		t.Errorf("project worker should be added, but not found")
+	}
+}
+
