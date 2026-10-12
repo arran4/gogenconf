@@ -24,10 +24,40 @@ type SourceLayer struct {
 	Trusted  bool          // whether this layer is caller-certified as trusted
 }
 
+// CompositionWarning describes a warning encountered during composition with lifecycle stage,
+// target path, mutation operation, message, and source span.
+type CompositionWarning struct {
+	Stage     Stage
+	Path      string
+	Operation string
+	Message   string
+	Span      Span
+}
+
+func (w CompositionWarning) String() string {
+	if w.Operation != "" {
+		return fmt.Sprintf("[%s] %s %s: %s (at %v)", w.Stage, w.Operation, w.Path, w.Message, w.Span)
+	}
+	return fmt.Sprintf("[%s] %s: %s (at %v)", w.Stage, w.Path, w.Message, w.Span)
+}
+
 // CompositionOptions specifies compatibility constraints and parameters for composition.
 type CompositionOptions struct {
 	ExpectedIdentity string
 	MaxVersion       int
+	WarnCollector    func(warning CompositionWarning)
+}
+
+func (opts CompositionOptions) warn(path, operation, msg string, span Span) {
+	if opts.WarnCollector != nil {
+		opts.WarnCollector(CompositionWarning{
+			Stage:     StageCompose,
+			Path:      path,
+			Operation: operation,
+			Message:   msg,
+			Span:      span,
+		})
+	}
 }
 
 // Compose combines multiple ordered source layers into an effective document.
@@ -40,6 +70,16 @@ func Compose(layers []SourceLayer, opts CompositionOptions) (*Document, error) {
 			Version:    opts.MaxVersion,
 			HasVersion: opts.MaxVersion > 0,
 		}, nil
+	}
+
+	// Reject duplicate (Priority, Order) source-layer pairs
+	seenPriorityOrder := make(map[[2]int]string, len(layers))
+	for _, l := range layers {
+		key := [2]int{int(l.Priority), l.Order}
+		if prev, exists := seenPriorityOrder[key]; exists {
+			return nil, fmt.Errorf("duplicate layer priority/order (%d, %d) between layer %q and %q", l.Priority, l.Order, prev, l.Name)
+		}
+		seenPriorityOrder[key] = l.Name
 	}
 
 	// Stable sort by Priority ascending, then Order ascending
@@ -73,13 +113,13 @@ func Compose(layers []SourceLayer, opts CompositionOptions) (*Document, error) {
 	}
 
 	for _, layer := range sorted {
-		mergeDocumentInto(effective, layer.Document)
+		mergeDocumentInto(effective, layer.Document, opts)
 	}
 
 	return effective, nil
 }
 
-func mergeDocumentInto(target, source *Document) {
+func mergeDocumentInto(target, source *Document, opts CompositionOptions) {
 	if target == nil || source == nil {
 		return
 	}
@@ -96,49 +136,17 @@ func mergeDocumentInto(target, source *Document) {
 	for _, item := range source.Items {
 		switch e := item.(type) {
 		case Entry:
-			if e.Value == nil {
-				target.Delete(e.Key)
-			} else if oldEntry, idx, found := target.Entry(e.Key); found {
-				oldMap, oldIsMap := oldEntry.Value.(Map)
-				newMap, newIsMap := e.Value.(Map)
-				if oldIsMap && newIsMap {
-					target.Items[idx] = Entry{
-						Key:    e.Key,
-						Value:  mergeMaps(oldMap, newMap),
-						Span:   e.Span,
-						Origin: OriginAuthored,
-					}
-				} else {
-					target.Items[idx] = Entry{
-						Key:    e.Key,
-						Value:  CloneExpr(e.Value),
-						Span:   e.Span,
-						Origin: OriginAuthored,
-					}
-				}
-			} else {
-				target.Items = append(target.Items, Entry{
-					Key:    e.Key,
-					Value:  CloneExpr(e.Value),
-					Span:   e.Span,
-					Origin: OriginAuthored,
-				})
-			}
+			applyEntryMutation(&target.Items, e, e.Key, opts, target.Delete, target.DeleteSection)
 		}
 	}
 
 	// Merge sections
 	for _, sec := range source.Sections {
-		targetSec := target.Section(sec.Name)
-		if targetSec == nil {
-			target.AddSection(sec.Clone())
-		} else {
-			mergeSection(targetSec, sec)
-		}
+		mergeSectionIntoContainer(&target.Items, &target.Sections, sec, sec.Name, opts, target.DeleteSection, target.AddSection)
 	}
 }
 
-func mergeSection(target, source *Section) {
+func mergeSection(target, source *Section, currentPath string, opts CompositionOptions) {
 	if target == nil || source == nil {
 		return
 	}
@@ -146,46 +154,299 @@ func mergeSection(target, source *Section) {
 	for _, item := range source.Items {
 		switch e := item.(type) {
 		case Entry:
-			if e.Value == nil {
-				target.Delete(e.Key)
-			} else if oldEntry, idx, found := target.Entry(e.Key); found {
-				oldMap, oldIsMap := oldEntry.Value.(Map)
-				newMap, newIsMap := e.Value.(Map)
-				if oldIsMap && newIsMap {
-					target.Items[idx] = Entry{
-						Key:    e.Key,
-						Value:  mergeMaps(oldMap, newMap),
-						Span:   e.Span,
-						Origin: OriginAuthored,
-					}
-				} else {
-					target.Items[idx] = Entry{
-						Key:    e.Key,
-						Value:  CloneExpr(e.Value),
-						Span:   e.Span,
-						Origin: OriginAuthored,
-					}
-				}
-			} else {
-				target.Items = append(target.Items, Entry{
-					Key:    e.Key,
-					Value:  CloneExpr(e.Value),
-					Span:   e.Span,
-					Origin: OriginAuthored,
-				})
-			}
+			applyEntryMutation(&target.Items, e, joinPath(currentPath, e.Key), opts, target.Delete, target.DeleteSection)
 		}
 	}
 
 	// Recursively merge child sections
 	for _, sub := range source.Sections {
-		targetSub := target.Section(sub.Name)
-		if targetSub == nil {
-			target.AddSection(sub.Clone())
+		mergeSectionIntoContainer(&target.Items, &target.Sections, sub, joinPath(currentPath, sub.Name), opts, target.DeleteSection, target.AddSection)
+	}
+}
+
+func mergeSectionIntoContainer(
+	items *[]Item,
+	sections *[]*Section,
+	sec *Section,
+	path string,
+	opts CompositionOptions,
+	deleteSec func(string) bool,
+	addSec func(*Section),
+) {
+	findSec := func(name string) *Section {
+		for _, s := range *sections {
+			if s.Name == name {
+				return s
+			}
+		}
+		return nil
+	}
+
+	switch sec.Mutation {
+	case MutationDelete:
+		if !deleteSec(sec.Name) {
+			opts.warn(path, "[-]", fmt.Sprintf("deletion target section %q not found", sec.Name), sec.Span)
+		}
+	case MutationReplace:
+		deleteSec(sec.Name)
+		cloned := sec.Clone()
+		cloned.Mutation = MutationNone
+		addSec(cloned)
+	case MutationAdd:
+		targetSec := findSec(sec.Name)
+		if targetSec == nil {
+			cloned := sec.Clone()
+			cloned.Mutation = MutationNone
+			addSec(cloned)
 		} else {
-			mergeSection(targetSub, sub)
+			mergeSection(targetSec, sec, path, opts)
+		}
+	case MutationMutate:
+		targetSec := findSec(sec.Name)
+		if targetSec == nil {
+			opts.warn(path, "[~]", fmt.Sprintf("mutation target section %q not found; constructing section", sec.Name), sec.Span)
+			cloned := sec.Clone()
+			cloned.Mutation = MutationNone
+			addSec(cloned)
+		} else {
+			mergeSection(targetSec, sec, path, opts)
+		}
+	case MutationNone:
+		targetSec := findSec(sec.Name)
+		if targetSec == nil {
+			targetSec = &Section{
+				Name:   sec.Name,
+				Brace:  sec.Brace,
+				Span:   sec.Span,
+				Origin: sec.Origin,
+			}
+			addSec(targetSec)
+		}
+		mergeSection(targetSec, sec, path, opts)
+	}
+}
+
+func joinPath(parent, child string) string {
+	if parent == "" {
+		return child
+	}
+	return parent + "." + child
+}
+
+func applyEntryMutation(items *[]Item, e Entry, path string, opts CompositionOptions, deleteEntry func(string) bool, deleteSec func(string) bool) {
+	switch e.Mutation {
+	case MutationDelete:
+		// [-] delete / remove
+		delEntry := deleteEntry(e.Key)
+		delSec := false
+		if deleteSec != nil {
+			delSec = deleteSec(e.Key)
+		}
+		if !delEntry && !delSec {
+			opts.warn(path, "[-]", fmt.Sprintf("deletion target %q not found", e.Key), e.Span)
+		}
+	case MutationReplace:
+		// [=] replace / overwrite
+		setOrReplaceItem(items, Entry{
+			Key:      e.Key,
+			Mutation: MutationNone,
+			Value:    CloneExpr(e.Value),
+			Span:     e.Span,
+			Origin:   OriginAuthored,
+		})
+	case MutationAdd:
+		// [+] add / append / insert
+		if idx := findEntryIndex(*items, e.Key); idx >= 0 {
+			oldEntry := (*items)[idx].(Entry)
+			(*items)[idx] = Entry{
+				Key:      e.Key,
+				Mutation: MutationNone,
+				Value:    addValues(oldEntry.Value, e.Value, e.Span),
+				Span:     e.Span,
+				Origin:   OriginAuthored,
+			}
+		} else {
+			// Automatic upsert
+			*items = append(*items, Entry{
+				Key:      e.Key,
+				Mutation: MutationNone,
+				Value:    CloneExpr(e.Value),
+				Span:     e.Span,
+				Origin:   OriginAuthored,
+			})
+		}
+	case MutationMutate:
+		// [~] mutate / inherit (NOT prepend!)
+		if idx := findEntryIndex(*items, e.Key); idx >= 0 {
+			oldEntry := (*items)[idx].(Entry)
+			(*items)[idx] = Entry{
+				Key:      e.Key,
+				Mutation: MutationNone,
+				Value:    mutateValues(oldEntry.Value, e.Value, e.Span),
+				Span:     e.Span,
+				Origin:   OriginAuthored,
+			}
+		} else {
+			// For missing [~] targets, warn and construct value
+			opts.warn(path, "[~]", fmt.Sprintf("mutation target %q not found; constructing value", e.Key), e.Span)
+			*items = append(*items, Entry{
+				Key:      e.Key,
+				Mutation: MutationNone,
+				Value:    CloneExpr(e.Value),
+				Span:     e.Span,
+				Origin:   OriginAuthored,
+			})
+		}
+	case MutationNone:
+		// Bare declaration
+		if e.Value == nil {
+			// Bare value-less entry is treated as deletion
+			delEntry := deleteEntry(e.Key)
+			delSec := false
+			if deleteSec != nil {
+				delSec = deleteSec(e.Key)
+			}
+			if !delEntry && !delSec {
+				opts.warn(path, "[-]", fmt.Sprintf("deletion target %q not found", e.Key), e.Span)
+			}
+		} else if idx := findEntryIndex(*items, e.Key); idx >= 0 {
+			oldEntry := (*items)[idx].(Entry)
+			oldMap, oldIsMap := oldEntry.Value.(Map)
+			newMap, newIsMap := e.Value.(Map)
+			if oldIsMap && newIsMap {
+				(*items)[idx] = Entry{
+					Key:      e.Key,
+					Mutation: MutationNone,
+					Value:    mergeMaps(oldMap, newMap),
+					Span:     e.Span,
+					Origin:   OriginAuthored,
+				}
+			} else {
+				// Bare scalar replaces!
+				(*items)[idx] = Entry{
+					Key:      e.Key,
+					Mutation: MutationNone,
+					Value:    CloneExpr(e.Value),
+					Span:     e.Span,
+					Origin:   OriginAuthored,
+				}
+			}
+		} else {
+			*items = append(*items, Entry{
+				Key:      e.Key,
+				Mutation: MutationNone,
+				Value:    CloneExpr(e.Value),
+				Span:     e.Span,
+				Origin:   OriginAuthored,
+			})
 		}
 	}
+}
+
+func findEntryIndex(items []Item, key string) int {
+	for i, it := range items {
+		if e, ok := it.(Entry); ok && e.Key == key {
+			return i
+		}
+	}
+	return -1
+}
+
+func setOrReplaceItem(items *[]Item, entry Entry) {
+	if idx := findEntryIndex(*items, entry.Key); idx >= 0 {
+		(*items)[idx] = entry
+	} else {
+		*items = append(*items, entry)
+	}
+}
+
+func addValues(base, extra Expr, span Span) Expr {
+	if base == nil {
+		return CloneExpr(extra)
+	}
+	if extra == nil {
+		return CloneExpr(base)
+	}
+
+	baseList, baseIsList := base.(List)
+	extraList, extraIsList := extra.(List)
+
+	if baseIsList && extraIsList {
+		out := List{
+			Items:  make([]Expr, 0, len(baseList.Items)+len(extraList.Items)),
+			Span:   span,
+			Origin: OriginAuthored,
+		}
+		for _, it := range baseList.Items {
+			out.Items = append(out.Items, CloneExpr(it))
+		}
+		for _, it := range extraList.Items {
+			out.Items = append(out.Items, CloneExpr(it))
+		}
+		return out
+	}
+	if baseIsList {
+		out := List{
+			Items:  make([]Expr, 0, len(baseList.Items)+1),
+			Span:   span,
+			Origin: OriginAuthored,
+		}
+		for _, it := range baseList.Items {
+			out.Items = append(out.Items, CloneExpr(it))
+		}
+		out.Items = append(out.Items, CloneExpr(extra))
+		return out
+	}
+
+	baseMap, baseIsMap := base.(Map)
+	extraMap, extraIsMap := extra.(Map)
+	if baseIsMap && extraIsMap {
+		return mergeMaps(baseMap, extraMap)
+	}
+
+	// For scalars or incompatible types, replace with extra
+	return CloneExpr(extra)
+}
+
+func mutateValues(base, override Expr, span Span) Expr {
+	if base == nil {
+		return CloneExpr(override)
+	}
+	if override == nil {
+		return CloneExpr(base)
+	}
+
+	baseMap, baseIsMap := base.(Map)
+	overrideMap, overrideIsMap := override.(Map)
+	if baseIsMap && overrideIsMap {
+		return mergeMaps(baseMap, overrideMap)
+	}
+
+	baseList, baseIsList := base.(List)
+	overrideList, overrideIsList := override.(List)
+	if baseIsList && overrideIsList {
+		// Mutate/inherit elements by index: override specified indices, inherit remaining base items
+		maxLen := len(baseList.Items)
+		if len(overrideList.Items) > maxLen {
+			maxLen = len(overrideList.Items)
+		}
+		out := List{
+			Items:  make([]Expr, maxLen),
+			Span:   span,
+			Origin: OriginAuthored,
+		}
+		for i := 0; i < maxLen; i++ {
+			if i < len(overrideList.Items) {
+				out.Items[i] = CloneExpr(overrideList.Items[i])
+			} else {
+				out.Items[i] = CloneExpr(baseList.Items[i])
+			}
+		}
+		return out
+	}
+
+	// Scalar inheritance: override replaces base value
+	return CloneExpr(override)
 }
 
 func mergeMaps(base, override Map) Map {

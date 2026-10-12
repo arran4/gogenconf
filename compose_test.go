@@ -225,3 +225,409 @@ end
 		t.Errorf("host was unexpectedly altered: %v", effective.PathValue("server", "host"))
 	}
 }
+
+func TestComposeDuplicatePriorityOrderRejection(t *testing.T) {
+	doc1 := &gogenconf.Document{Identity: "test", Version: 1, HasVersion: true}
+	doc2 := &gogenconf.Document{Identity: "test", Version: 1, HasVersion: true}
+
+	layers := []gogenconf.SourceLayer{
+		{Name: "layer1.conf", Document: doc1, Priority: gogenconf.PrioritySystem, Order: 1},
+		{Name: "layer2.conf", Document: doc2, Priority: gogenconf.PrioritySystem, Order: 1},
+	}
+
+	_, err := gogenconf.Compose(layers, gogenconf.CompositionOptions{
+		ExpectedIdentity: "test",
+		MaxVersion:       1,
+	})
+	if err == nil {
+		t.Fatal("expected error on duplicate (Priority, Order) layers, got nil")
+	}
+	if !strings.Contains(err.Error(), "duplicate layer priority/order") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestComposeExplicitMutationOperators(t *testing.T) {
+	baseText := `config for app version 1
+section service
+    tags [ "core", "api" ]
+    port 8080
+    settings { env: "prod", debug: "false" }
+    old_key "to-be-removed"
+end
+`
+	overrideText := `config for app version 1
+section service
+    [+] tags "auth"
+    [=] port 9090
+    [~] settings { debug: "true", extra: "enabled" }
+    [-] old_key
+end
+`
+
+	baseDoc, err := gogenconf.ParseNamed(strings.NewReader(baseText), "base.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	overrideDoc, err := gogenconf.ParseNamed(strings.NewReader(overrideText), "override.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	layers := []gogenconf.SourceLayer{
+		{Name: "base", Document: baseDoc, Priority: gogenconf.PriorityDefault, Order: 0},
+		{Name: "override", Document: overrideDoc, Priority: gogenconf.PriorityUser, Order: 0},
+	}
+
+	var warnings []string
+	effective, err := gogenconf.Compose(layers, gogenconf.CompositionOptions{
+		ExpectedIdentity: "app",
+		MaxVersion:       1,
+		WarnCollector: func(w gogenconf.CompositionWarning) {
+			warnings = append(warnings, w.Message)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compose failed: %v", err)
+	}
+
+	if len(warnings) != 0 {
+		t.Errorf("unexpected warnings: %v", warnings)
+	}
+
+	// 1. [+] appended "auth" to tags list
+	tagsVal := effective.PathValue("service", "tags")
+	tagsList, ok := tagsVal.(gogenconf.List)
+	if !ok || len(tagsList.Items) != 3 {
+		t.Fatalf("tags = %v; want 3 items", tagsVal)
+	}
+	if tagsList.Items[2].(gogenconf.Literal).Value != "auth" {
+		t.Errorf("expected tags[2] == 'auth', got %v", tagsList.Items[2])
+	}
+
+	// 2. [=] replaced port with 9090
+	portVal := effective.PathValue("service", "port")
+	if lit, ok := portVal.(gogenconf.Literal); !ok || lit.Value != "9090" {
+		t.Errorf("port = %v; want 9090", portVal)
+	}
+
+	// 3. [~] mutate / inherit settings map
+	settingsVal := effective.PathValue("service", "settings")
+	settingsMap, ok := settingsVal.(gogenconf.Map)
+	if !ok || len(settingsMap.Entries) != 3 {
+		t.Fatalf("settings = %v; want 3 entries", settingsVal)
+	}
+	resMap := map[string]string{}
+	for _, en := range settingsMap.Entries {
+		resMap[en.Key] = en.Value.(gogenconf.Literal).Value
+	}
+	if resMap["env"] != "prod" || resMap["debug"] != "true" || resMap["extra"] != "enabled" {
+		t.Errorf("settings map mismatch: %+v", resMap)
+	}
+
+	// 4. [-] deleted old_key
+	if effective.PathValue("service", "old_key") != nil {
+		t.Errorf("expected old_key to be deleted, got %v", effective.PathValue("service", "old_key"))
+	}
+}
+
+func TestComposeMissingTargetWarnings(t *testing.T) {
+	overrideText := `config for app version 1
+section service
+    [~] nonexistent_map { key: "val" }
+    [-] missing_key
+end
+`
+	overrideDoc, err := gogenconf.ParseNamed(strings.NewReader(overrideText), "override.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var warnings []gogenconf.CompositionWarning
+	effective, err := gogenconf.Compose([]gogenconf.SourceLayer{
+		{Name: "override", Document: overrideDoc, Priority: gogenconf.PriorityUser, Order: 0},
+	}, gogenconf.CompositionOptions{
+		ExpectedIdentity: "app",
+		MaxVersion:       1,
+		WarnCollector: func(w gogenconf.CompositionWarning) {
+			warnings = append(warnings, w)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compose failed: %v", err)
+	}
+
+	// Expect 2 warnings: one for [~] missing target, one for [-] missing target
+	if len(warnings) != 2 {
+		t.Fatalf("expected 2 warnings, got %d: %v", len(warnings), warnings)
+	}
+	if warnings[0].Stage != gogenconf.StageCompose || warnings[0].Operation != "[~]" || warnings[0].Path != "service.nonexistent_map" {
+		t.Errorf("warning 0 mismatch: %+v", warnings[0])
+	}
+	if warnings[1].Stage != gogenconf.StageCompose || warnings[1].Operation != "[-]" || warnings[1].Path != "service.missing_key" {
+		t.Errorf("warning 1 mismatch: %+v", warnings[1])
+	}
+
+	// For missing [~] target, value should have been constructed
+	val := effective.PathValue("service", "nonexistent_map")
+	if val == nil {
+		t.Error("expected nonexistent_map to be constructed for missing [~] target")
+	}
+}
+
+func TestMutationParseAndFormatRoundTrip(t *testing.T) {
+	input := `config for app version 1
+
+section service
+    [+] tags "new-tag"
+    [=] port 8443
+    [~] settings { env: "prod" }
+    [-] deprecated_field
+end
+`
+	doc, err := gogenconf.ParseNamed(strings.NewReader(input), "input.conf")
+	if err != nil {
+		t.Fatalf("ParseNamed failed: %v", err)
+	}
+
+	sec := doc.Section("service")
+	if sec == nil {
+		t.Fatal("missing service section")
+	}
+
+	e, _, ok := sec.Entry("tags")
+	if !ok || e.Mutation != gogenconf.MutationAdd {
+		t.Errorf("tags mutation = %v; want MutationAdd", e.Mutation)
+	}
+
+	e, _, ok = sec.Entry("port")
+	if !ok || e.Mutation != gogenconf.MutationReplace {
+		t.Errorf("port mutation = %v; want MutationReplace", e.Mutation)
+	}
+
+	e, _, ok = sec.Entry("settings")
+	if !ok || e.Mutation != gogenconf.MutationMutate {
+		t.Errorf("settings mutation = %v; want MutationMutate", e.Mutation)
+	}
+
+	e, _, ok = sec.Entry("deprecated_field")
+	if !ok || e.Mutation != gogenconf.MutationDelete {
+		t.Errorf("deprecated_field mutation = %v; want MutationDelete", e.Mutation)
+	}
+
+	formatted := gogenconf.Format(doc)
+	doc2, err := gogenconf.ParseNamed(strings.NewReader(formatted), "formatted.conf")
+	if err != nil {
+		t.Fatalf("re-parsing formatted doc failed: %v", err)
+	}
+
+	formatted2 := gogenconf.Format(doc2)
+	if formatted != formatted2 {
+		t.Errorf("formatting round-trip mismatch:\n%s\nvs\n%s", formatted, formatted2)
+	}
+}
+
+func TestComposeObjectAndCompactPathMutations(t *testing.T) {
+	baseText := `config for app version 1
+
+server {
+    host "127.0.0.1"
+    port 8080
+    tls {
+        enabled "true"
+    }
+}
+
+a b c {
+    target linux
+    arch amd64
+}
+
+storage {
+    driver "s3"
+}
+`
+
+	overrideText := `config for app version 1
+
+[~] server {
+    port 9090
+    tls {
+        cert "/path/to/cert"
+    }
+}
+
+[=] a b c {
+    target darwin
+}
+
+[-] storage {
+}
+
+[+] monitor {
+    interval 10s
+}
+`
+
+	baseDoc, err := gogenconf.ParseNamed(strings.NewReader(baseText), "base.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	overrideDoc, err := gogenconf.ParseNamed(strings.NewReader(overrideText), "override.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var warnings []gogenconf.CompositionWarning
+	effective, err := gogenconf.Compose([]gogenconf.SourceLayer{
+		{Name: "base", Document: baseDoc, Priority: gogenconf.PriorityDefault, Order: 0},
+		{Name: "override", Document: overrideDoc, Priority: gogenconf.PriorityUser, Order: 0},
+	}, gogenconf.CompositionOptions{
+		ExpectedIdentity: "app",
+		MaxVersion:       1,
+		WarnCollector: func(w gogenconf.CompositionWarning) {
+			warnings = append(warnings, w)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Compose failed: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("unexpected warnings: %+v", warnings)
+	}
+
+	// 1. [~] server: host preserved from base, port updated to 9090, tls.enabled preserved, tls.cert added
+	hostVal := effective.PathValue("server", "host")
+	if lit, ok := hostVal.(gogenconf.Literal); !ok || lit.Value != "127.0.0.1" {
+		t.Errorf("server.host = %v; want 127.0.0.1", hostVal)
+	}
+	portVal := effective.PathValue("server", "port")
+	if lit, ok := portVal.(gogenconf.Literal); !ok || lit.Value != "9090" {
+		t.Errorf("server.port = %v; want 9090", portVal)
+	}
+	tlsEnabled := effective.PathValue("server", "tls", "enabled")
+	if lit, ok := tlsEnabled.(gogenconf.Literal); !ok || lit.Value != "true" {
+		t.Errorf("server.tls.enabled = %v; want true", tlsEnabled)
+	}
+	tlsCert := effective.PathValue("server", "tls", "cert")
+	if lit, ok := tlsCert.(gogenconf.Literal); !ok || lit.Value != "/path/to/cert" {
+		t.Errorf("server.tls.cert = %v; want /path/to/cert", tlsCert)
+	}
+
+	// 2. [=] a b c: replaced c block, target is darwin, arch amd64 was deleted/not preserved
+	targetVal := effective.PathValue("a", "b", "c", "target")
+	if lit, ok := targetVal.(gogenconf.Literal); !ok || lit.Value != "darwin" {
+		t.Errorf("a.b.c.target = %v; want darwin", targetVal)
+	}
+	archVal := effective.PathValue("a", "b", "c", "arch")
+	if archVal != nil {
+		t.Errorf("a.b.c.arch should have been replaced, got %v", archVal)
+	}
+
+	// 3. [-] storage: section deleted
+	if effective.Section("storage") != nil {
+		t.Errorf("storage section should have been deleted")
+	}
+
+	// 4. [+] monitor: new section added
+	intervalVal := effective.PathValue("monitor", "interval")
+	if lit, ok := intervalVal.(gogenconf.Literal); !ok || lit.Value != "10s" {
+		t.Errorf("monitor.interval = %v; want 10s", intervalVal)
+	}
+}
+
+func TestComposeAllTypesMutationsMatrix(t *testing.T) {
+	baseText := `config for matrix version 1
+
+section data
+    scalar_a "val_a"
+    scalar_b "val_b"
+    list_a [ "x", "y" ]
+    map_a { k1: "v1", k2: "v2" }
+    
+    section sub_a
+        f1 "original"
+    end
+end
+`
+
+	overrideText := `config for matrix version 1
+
+section data
+    [=] scalar_a "replaced_a"
+    [-] scalar_b
+    [+] list_a [ "z" ]
+    [~] map_a { k2: "updated_v2", k3: "new_v3" }
+    
+    [=] sub_a {
+        f2 "fresh"
+    }
+end
+`
+
+	baseDoc, err := gogenconf.ParseNamed(strings.NewReader(baseText), "base.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	overrideDoc, err := gogenconf.ParseNamed(strings.NewReader(overrideText), "override.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	effective, err := gogenconf.Compose([]gogenconf.SourceLayer{
+		{Name: "base", Document: baseDoc, Priority: gogenconf.PriorityDefault, Order: 0},
+		{Name: "override", Document: overrideDoc, Priority: gogenconf.PriorityUser, Order: 0},
+	}, gogenconf.CompositionOptions{
+		ExpectedIdentity: "matrix",
+		MaxVersion:       1,
+	})
+	if err != nil {
+		t.Fatalf("Compose failed: %v", err)
+	}
+
+	// Scalar [=]
+	sa := effective.PathValue("data", "scalar_a")
+	if lit, ok := sa.(gogenconf.Literal); !ok || lit.Value != "replaced_a" {
+		t.Errorf("scalar_a = %v; want replaced_a", sa)
+	}
+
+	// Scalar [-]
+	sb := effective.PathValue("data", "scalar_b")
+	if sb != nil {
+		t.Errorf("scalar_b should have been deleted, got %v", sb)
+	}
+
+	// List [+]
+	la := effective.PathValue("data", "list_a")
+	listObj, ok := la.(gogenconf.List)
+	if !ok || len(listObj.Items) != 3 {
+		t.Fatalf("list_a = %v; want 3 items", la)
+	}
+	if listObj.Items[2].(gogenconf.Literal).Value != "z" {
+		t.Errorf("list_a[2] = %v; want z", listObj.Items[2])
+	}
+
+	// Map [~]
+	ma := effective.PathValue("data", "map_a")
+	mapObj, ok := ma.(gogenconf.Map)
+	if !ok || len(mapObj.Entries) != 3 {
+		t.Fatalf("map_a = %v; want 3 entries", ma)
+	}
+	m := map[string]string{}
+	for _, e := range mapObj.Entries {
+		m[e.Key] = e.Value.(gogenconf.Literal).Value
+	}
+	if m["k1"] != "v1" || m["k2"] != "updated_v2" || m["k3"] != "new_v3" {
+		t.Errorf("map_a contents mismatch: %+v", m)
+	}
+
+	// Object [=]
+	subA_f1 := effective.PathValue("data", "sub_a", "f1")
+	if subA_f1 != nil {
+		t.Errorf("sub_a.f1 should have been deleted by [=], got %v", subA_f1)
+	}
+	subA_f2 := effective.PathValue("data", "sub_a", "f2")
+	if lit, ok := subA_f2.(gogenconf.Literal); !ok || lit.Value != "fresh" {
+		t.Errorf("sub_a.f2 = %v; want fresh", subA_f2)
+	}
+}
