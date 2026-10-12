@@ -263,6 +263,52 @@ end
 `,
 			errSub: "field declaration requires key and Go type",
 		},
+		{
+			name: "invalid boolean literal in field",
+			input: `config for myapp-schema version 1
+version 1
+section server
+    section field host string
+        required "maybe"
+    end
+end
+`,
+			errSub: "invalid boolean value",
+		},
+		{
+			name: "unsupported boolean expression shape in field",
+			input: `config for myapp-schema version 1
+version 1
+section server
+    section field host string
+        required call("env")
+    end
+end
+`,
+			errSub: "expected boolean literal, got",
+		},
+		{
+			name: "unknown section metadata",
+			input: `config for myapp-schema version 1
+version 1
+section server
+    invalid_section_metadata true
+end
+`,
+			errSub: "unknown section metadata",
+		},
+		{
+			name: "unknown field metadata",
+			input: `config for myapp-schema version 1
+version 1
+section server
+    section field host string
+        bogus_key "val"
+    end
+end
+`,
+			errSub: "unknown field metadata",
+		},
 	}
 
 	for _, tc := range cases {

@@ -109,11 +109,11 @@ func parseSectionDefinition(sec *Section) (SectionDefinition, error) {
 					secDef.GoType = lit.Value
 				}
 			case "repeated":
-				if v.Value == nil {
-					secDef.Repeated = true
-				} else if lit, ok := v.Value.(Literal); ok {
-					secDef.Repeated = lit.Value == "true" || lit.Value == ""
+				b, err := parseBoolExpr(v.Value, v.Span)
+				if err != nil {
+					return secDef, err
 				}
+				secDef.Repeated = b
 			case "doc":
 				if lit, ok := v.Value.(Literal); ok {
 					secDef.Documentation = append(secDef.Documentation, lit.Value)
@@ -146,6 +146,12 @@ func parseSectionDefinition(sec *Section) (SectionDefinition, error) {
 							GoType: goType,
 						})
 					}
+				}
+			default:
+				return secDef, &ConfigError{
+					Stage:  StageValidate,
+					Source: v.Span,
+					Err:    fmt.Errorf("unknown section metadata %q", v.Key),
 				}
 			}
 		case *Section:
@@ -209,15 +215,35 @@ func parseFieldDefinition(sec *Section) (Field, error) {
 					f.Documentation = append(f.Documentation, lit.Value)
 				}
 			case "required":
-				f.Required = parseBoolExpr(v.Value)
+				b, err := parseBoolExpr(v.Value, v.Span)
+				if err != nil {
+					return f, err
+				}
+				f.Required = b
 			case "sensitive":
-				f.Sensitive = parseBoolExpr(v.Value)
+				b, err := parseBoolExpr(v.Value, v.Span)
+				if err != nil {
+					return f, err
+				}
+				f.Sensitive = b
 			case "runtime_only":
-				f.RuntimeOnly = parseBoolExpr(v.Value)
+				b, err := parseBoolExpr(v.Value, v.Span)
+				if err != nil {
+					return f, err
+				}
+				f.RuntimeOnly = b
 			case "input_only":
-				f.InputOnly = parseBoolExpr(v.Value)
+				b, err := parseBoolExpr(v.Value, v.Span)
+				if err != nil {
+					return f, err
+				}
+				f.InputOnly = b
 			case "deprecated":
-				f.Deprecated = parseBoolExpr(v.Value)
+				b, err := parseBoolExpr(v.Value, v.Span)
+				if err != nil {
+					return f, err
+				}
+				f.Deprecated = b
 			case "policy":
 				if lit, ok := v.Value.(Literal); ok {
 					f.Policy = ResolutionPolicy(lit.Value)
@@ -227,7 +253,17 @@ func parseFieldDefinition(sec *Section) (Field, error) {
 					f.Environment = lit.Value
 				}
 			case "env_non_empty":
-				f.EnvironmentNonEmpty = parseBoolExpr(v.Value)
+				b, err := parseBoolExpr(v.Value, v.Span)
+				if err != nil {
+					return f, err
+				}
+				f.EnvironmentNonEmpty = b
+			default:
+				return f, &ConfigError{
+					Stage:  StageValidate,
+					Source: v.Span,
+					Err:    fmt.Errorf("unknown field metadata %q", v.Key),
+				}
 			}
 		}
 	}
@@ -235,14 +271,30 @@ func parseFieldDefinition(sec *Section) (Field, error) {
 	return f, nil
 }
 
-func parseBoolExpr(e Expr) bool {
+func parseBoolExpr(e Expr, span Span) (bool, error) {
 	if e == nil {
-		return true
+		return true, nil
 	}
-	if lit, ok := e.(Literal); ok {
-		return lit.Value == "true" || lit.Value == "1" || lit.Value == ""
+	lit, ok := e.(Literal)
+	if !ok {
+		return false, &ConfigError{
+			Stage:  StageValidate,
+			Source: span,
+			Err:    fmt.Errorf("expected boolean literal, got %T", e),
+		}
 	}
-	return true
+	switch strings.ToLower(lit.Value) {
+	case "true", "1", "":
+		return true, nil
+	case "false", "0":
+		return false, nil
+	default:
+		return false, &ConfigError{
+			Stage:  StageValidate,
+			Source: span,
+			Err:    fmt.Errorf("invalid boolean value %q", lit.Value),
+		}
+	}
 }
 
 func exportIdentifier(s string) string {
