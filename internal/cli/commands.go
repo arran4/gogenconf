@@ -25,7 +25,7 @@ import (
 // Declarers remain unresolved until explicit application binding. No command
 // reads environment/file sources mentioned inside a configuration value.
 //
-// Commands: format, validate, expr format, expr validate, template layout, template export, version.
+// Commands: generate, plan, format, validate, expr format, expr validate, template layout, template export, version.
 // Use --help on any command for examples. Version reports build version/commit/date.
 // Manual: https://github.com/arran4/gogenconf#readme
 // Site: https://arran4.github.io/gogenconf/
