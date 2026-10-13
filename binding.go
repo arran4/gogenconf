@@ -2,7 +2,7 @@ package gogenconf
 
 import (
 	"context"
-	"fmt"
+	"errors"
 )
 
 type LookupEnv func(string) (string, bool)
@@ -16,7 +16,7 @@ func BindingValue(d *Document, section, key string, fallback Expr, env string, n
 	}
 	if lookup != nil && env != "" {
 		if value, ok := lookup(env); ok && (!nonempty || value != "") {
-			return Literal{Value: value}
+			return Literal{Value: value, Origin: OriginDefaulted}
 		}
 	}
 	if present && entry.Value != nil {
@@ -26,15 +26,21 @@ func BindingValue(d *Document, section, key string, fallback Expr, env string, n
 }
 
 // ResolveField prevents a registered service error from disclosing a sensitive
-// value through generated binders or providers.
+// value through generated binders or providers while producing a structured ConfigError.
 func ResolveField[T any](ctx context.Context, r *Registry, e Expr, path string, sensitive bool) (T, error) {
 	v, err := Resolve[T](ctx, r, e)
 	if err != nil {
 		var zero T
+		cause := err
 		if sensitive {
-			return zero, fmt.Errorf("resolve %s: source resolution failed", path)
+			cause = errors.New("source resolution failed")
 		}
-		return zero, fmt.Errorf("resolve %s: %w", path, err)
+		return zero, &ConfigError{
+			Stage:  StageResolve,
+			Path:   path,
+			Source: SpanOf(e),
+			Err:    cause,
+		}
 	}
 	return v, nil
 }

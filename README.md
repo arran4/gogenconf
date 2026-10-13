@@ -364,6 +364,38 @@ original document preserves even authored sensitive literals. A display-safe
 source contract describes argument roles (locator versus secret content); an
 unknown custom call fails closed even if its name begins with `from_`.
 
+## Source spans, provenance, and contextual diagnostics
+
+To support actionable configuration errors in real consumers (such as arran4/go2gentoo),
+both the canonical `gogenconf` parser and generated application runtimes attach source
+positioning and provenance metadata:
+
+- **Source spans**: `Span{Source, Line, Column, Offset}` records the exact origin of authored
+  sections, entries, and expressions. Use `ParseNamed(r, filename)` to attach file names.
+- **Provenance tracking**: `Origin` explicitly distinguishes `OriginAuthored`, `OriginDefaulted`,
+  `OriginEnriched`, and `OriginMigrated`. Defaulted entries have zero spans and `OriginDefaulted`,
+  avoiding artificial positions for non-authored syntax.
+- **Contextual errors**: Failures across lifecycle stages (`StageParse`, `StageValidate`,
+  `StageResolve`, `StageConvert`) return `*ConfigError` wrappers:
+
+```go
+doc, err := gogenconf.ParseNamed(r, "app.conf")
+if err != nil {
+    var cfgErr *gogenconf.ConfigError
+    if errors.As(err, &cfgErr) {
+        // e.g. "configuration parse app.conf:4:9: invalid expression: missing call argument"
+        log.Printf("stage=%s path=%s span=%s err=%v",
+            cfgErr.Stage, cfgErr.Path, cfgErr.Source, cfgErr.Err)
+    }
+}
+```
+
+- **Unwrap compatibility**: `ConfigError.Unwrap()` preserves underlying error identity,
+  supporting standard `errors.Is` and `errors.As` checks.
+- **Sensitive redaction**: When resolution fails on a field marked `Sensitive: true`,
+  underlying error messages (which may contain secret data or tokens) are redacted to
+  `source resolution failed` to guarantee zero diagnostic leakage.
+
 ## CLI reference
 
 The CLI is schema-independent and never resolves declarations. Every command

@@ -2,6 +2,7 @@ package gogenconf
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -12,6 +13,11 @@ import (
 // Versions are root metadata; unversioned input is explicitly legacy version 0.
 // Duplicate fields/sections and malformed delimiters are rejected, not guessed.
 func Parse(r io.Reader) (*Document, error) {
+	return ParseNamed(r, "")
+}
+
+// ParseNamed reads the native language and attaches source name to node spans.
+func ParseNamed(r io.Reader, sourceName string) (*Document, error) {
 	d := &Document{}
 	scan := bufio.NewScanner(r)
 	scan.Buffer(make([]byte, 4096), 1024*1024)
@@ -24,20 +30,34 @@ func Parse(r io.Reader) (*Document, error) {
 		text  string
 	}
 	lineNo := 0
-	fail := func(message string) (*Document, error) {
-		return nil, fmt.Errorf("configuration line %d: %s", lineNo, message)
+	lineOffset := 0
+	fail := func(col int, message string) (*Document, error) {
+		return nil, &ConfigError{
+			Stage: StageParse,
+			Source: Span{
+				Source: sourceName,
+				Line:   lineNo,
+				Column: col,
+				Offset: lineOffset + col - 1,
+			},
+			Err: errors.New(message),
+		}
 	}
 	for scan.Scan() {
 		lineNo++
-		line := strings.TrimSpace(scan.Text())
+		rawLine := scan.Text()
+		line := strings.TrimSpace(rawLine)
 		items := &d.Items
 		if section != nil {
 			items = &section.Items
 		}
 		if line == "" {
 			*items = append(*items, Blank{})
+			lineOffset += len(rawLine) + 1
 			continue
 		}
+		lead := strings.Index(rawLine, line)
+		lineCol := lead + 1
 		if strings.HasPrefix(line, "#") {
 			kind := UserComment
 			prefix := "#"
@@ -51,6 +71,7 @@ func Parse(r io.Reader) (*Document, error) {
 				}{items, len(*items), strings.TrimPrefix(line[1:], " ")})
 			}
 			*items = append(*items, Comment{Kind: kind, Text: strings.TrimPrefix(strings.TrimPrefix(line, prefix), " ")})
+			lineOffset += len(rawLine) + 1
 			continue
 		}
 		key, tail, _ := strings.Cut(line, " ")
@@ -62,58 +83,91 @@ func Parse(r io.Reader) (*Document, error) {
 				break
 			}
 		}
+		keyCol := lineCol
 		switch key {
 		case "config_version":
 			if section != nil || d.HasVersion {
-				return fail("config_version must occur once at root")
+				return fail(keyCol, "config_version must occur once at root")
 			}
 			v, err := strconv.Atoi(tail)
 			if err != nil || v < 0 {
-				return fail("invalid config_version")
+				return fail(keyCol, "invalid config_version")
 			}
 			d.Version = v
 			d.HasVersion = true
 			d.Items = append(d.Items, Version{})
 		case "section":
 			if section != nil || tail == "" {
-				return fail("expected a named, non-nested section")
+				return fail(keyCol, "expected a named, non-nested section")
 			}
 			if d.Section(tail) != nil {
-				return fail("duplicate section")
+				return fail(keyCol, "duplicate section")
 			}
-			section = &Section{Name: tail}
+			section = &Section{
+				Name: tail,
+				Span: Span{
+					Source: sourceName,
+					Line:   lineNo,
+					Column: keyCol,
+					Offset: lineOffset + keyCol - 1,
+				},
+				Origin: OriginAuthored,
+			}
 			d.AddSection(section)
 		case "end":
 			if section == nil || tail != "" {
-				return fail("unexpected end")
+				return fail(keyCol, "unexpected end")
 			}
 			section = nil
 		default:
 			if !identifier(key) {
-				return fail("invalid field name")
+				return fail(keyCol, "invalid field name")
 			}
 			if section != nil {
 				if _, _, ok := section.Entry(key); ok {
-					return fail("duplicate field")
+					return fail(keyCol, "duplicate field")
 				}
 			}
-			e, err := ParseExpr(tail)
+			tailCol := keyCol + len(key)
+			if tail != "" {
+				tailIdx := strings.Index(rawLine[keyCol+len(key)-1:], tail)
+				if tailIdx >= 0 {
+					tailCol = keyCol + len(key) + tailIdx
+				}
+			}
+			e, err := ParseExprWithSpan(tail, Span{
+				Source: sourceName,
+				Line:   lineNo,
+				Column: tailCol,
+				Offset: lineOffset + tailCol - 1,
+			})
 			if err != nil {
-				return fail("invalid expression: " + err.Error())
+				return fail(tailCol, "invalid expression: "+err.Error())
 			}
 			// A legacy value-less entry is retained but is not an override.
 			// Explicit empty strings use "".
 			if tail == "" {
 				e = nil
 			}
-			*items = append(*items, Entry{Key: key, Value: e})
+			*items = append(*items, Entry{
+				Key:   key,
+				Value: e,
+				Span: Span{
+					Source: sourceName,
+					Line:   lineNo,
+					Column: keyCol,
+					Offset: lineOffset + keyCol - 1,
+				},
+				Origin: OriginAuthored,
+			})
 		}
+		lineOffset += len(rawLine) + 1
 	}
 	if err := scan.Err(); err != nil {
 		return nil, err
 	}
 	if section != nil {
-		return fail("unterminated section")
+		return fail(1, "unterminated section")
 	}
 	if !d.HasVersion || d.Version == 0 {
 		for _, c := range legacyComments {

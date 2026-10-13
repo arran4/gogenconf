@@ -4,6 +4,7 @@ package native
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -15,6 +16,11 @@ import (
 // Versions are root metadata; unversioned input is explicitly legacy version 0.
 // Duplicate fields/sections and malformed delimiters are rejected, not guessed.
 func Parse(r io.Reader) (*Document, error) {
+	return ParseNamed(r, "")
+}
+
+// ParseNamed reads the native language and attaches source name to node spans.
+func ParseNamed(r io.Reader, sourceName string) (*Document, error) {
 	d := &Document{}
 	scan := bufio.NewScanner(r)
 	scan.Buffer(make([]byte, 4096), 1024*1024)
@@ -27,20 +33,34 @@ func Parse(r io.Reader) (*Document, error) {
 		text  string
 	}
 	lineNo := 0
-	fail := func(message string) (*Document, error) {
-		return nil, fmt.Errorf("configuration line %d: %s", lineNo, message)
+	lineOffset := 0
+	fail := func(col int, message string) (*Document, error) {
+		return nil, &ConfigError{
+			Stage: StageParse,
+			Source: Span{
+				Source: sourceName,
+				Line:   lineNo,
+				Column: col,
+				Offset: lineOffset + col - 1,
+			},
+			Err: errors.New(message),
+		}
 	}
 	for scan.Scan() {
 		lineNo++
-		line := strings.TrimSpace(scan.Text())
+		rawLine := scan.Text()
+		line := strings.TrimSpace(rawLine)
 		items := &d.Items
 		if section != nil {
 			items = &section.Items
 		}
 		if line == "" {
 			*items = append(*items, Blank{})
+			lineOffset += len(rawLine) + 1
 			continue
 		}
+		lead := strings.Index(rawLine, line)
+		lineCol := lead + 1
 		if strings.HasPrefix(line, "#") {
 			kind := UserComment
 			prefix := "#"
@@ -54,6 +74,7 @@ func Parse(r io.Reader) (*Document, error) {
 				}{items, len(*items), strings.TrimPrefix(line[1:], " ")})
 			}
 			*items = append(*items, Comment{Kind: kind, Text: strings.TrimPrefix(strings.TrimPrefix(line, prefix), " ")})
+			lineOffset += len(rawLine) + 1
 			continue
 		}
 		key, tail, _ := strings.Cut(line, " ")
@@ -65,58 +86,91 @@ func Parse(r io.Reader) (*Document, error) {
 				break
 			}
 		}
+		keyCol := lineCol
 		switch key {
 		case "config_version":
 			if section != nil || d.HasVersion {
-				return fail("config_version must occur once at root")
+				return fail(keyCol, "config_version must occur once at root")
 			}
 			v, err := strconv.Atoi(tail)
 			if err != nil || v < 0 {
-				return fail("invalid config_version")
+				return fail(keyCol, "invalid config_version")
 			}
 			d.Version = v
 			d.HasVersion = true
 			d.Items = append(d.Items, Version{})
 		case "section":
 			if section != nil || tail == "" {
-				return fail("expected a named, non-nested section")
+				return fail(keyCol, "expected a named, non-nested section")
 			}
 			if d.Section(tail) != nil {
-				return fail("duplicate section")
+				return fail(keyCol, "duplicate section")
 			}
-			section = &Section{Name: tail}
+			section = &Section{
+				Name: tail,
+				Span: Span{
+					Source: sourceName,
+					Line:   lineNo,
+					Column: keyCol,
+					Offset: lineOffset + keyCol - 1,
+				},
+				Origin: OriginAuthored,
+			}
 			d.AddSection(section)
 		case "end":
 			if section == nil || tail != "" {
-				return fail("unexpected end")
+				return fail(keyCol, "unexpected end")
 			}
 			section = nil
 		default:
 			if !identifier(key) {
-				return fail("invalid field name")
+				return fail(keyCol, "invalid field name")
 			}
 			if section != nil {
 				if _, _, ok := section.Entry(key); ok {
-					return fail("duplicate field")
+					return fail(keyCol, "duplicate field")
 				}
 			}
-			e, err := ParseExpr(tail)
+			tailCol := keyCol + len(key)
+			if tail != "" {
+				tailIdx := strings.Index(rawLine[keyCol+len(key)-1:], tail)
+				if tailIdx >= 0 {
+					tailCol = keyCol + len(key) + tailIdx
+				}
+			}
+			e, err := ParseExprWithSpan(tail, Span{
+				Source: sourceName,
+				Line:   lineNo,
+				Column: tailCol,
+				Offset: lineOffset + tailCol - 1,
+			})
 			if err != nil {
-				return fail("invalid expression: " + err.Error())
+				return fail(tailCol, "invalid expression: "+err.Error())
 			}
 			// A legacy value-less entry is retained but is not an override.
 			// Explicit empty strings use "".
 			if tail == "" {
 				e = nil
 			}
-			*items = append(*items, Entry{Key: key, Value: e})
+			*items = append(*items, Entry{
+				Key:   key,
+				Value: e,
+				Span: Span{
+					Source: sourceName,
+					Line:   lineNo,
+					Column: keyCol,
+					Offset: lineOffset + keyCol - 1,
+				},
+				Origin: OriginAuthored,
+			})
 		}
+		lineOffset += len(rawLine) + 1
 	}
 	if err := scan.Err(); err != nil {
 		return nil, err
 	}
 	if section != nil {
-		return fail("unterminated section")
+		return fail(1, "unterminated section")
 	}
 	if !d.HasVersion || d.Version == 0 {
 		for _, c := range legacyComments {
@@ -140,9 +194,38 @@ func identifier(s string) bool {
 
 // ParseExpr parses a literal or a nested declarer expression.
 func ParseExpr(input string) (Expr, error) {
-	p := exprParser{input: strings.TrimSpace(input)}
+	return ParseExprWithSpan(input, Span{})
+}
+
+// ParseExprWithSpan parses a literal or a nested declarer expression, attaching source span metadata.
+func ParseExprWithSpan(input string, base Span) (Expr, error) {
+	trimmed := strings.TrimSpace(input)
+	leadingSpace := len(input) - len(strings.TrimLeft(input, " \t\r\n"))
+	startCol := base.Column
+	if startCol > 0 {
+		startCol += leadingSpace
+	}
+	startOffset := base.Offset
+	if startOffset > 0 || base.Line > 0 {
+		startOffset += leadingSpace
+	}
+	p := exprParser{
+		input:       trimmed,
+		baseSource:  base.Source,
+		baseLine:    base.Line,
+		startCol:    startCol,
+		startOffset: startOffset,
+	}
 	if p.input == "" {
-		return Literal{}, nil
+		return Literal{
+			Span: Span{
+				Source: base.Source,
+				Line:   base.Line,
+				Column: startCol,
+				Offset: startOffset,
+			},
+			Origin: OriginAuthored,
+		}, nil
 	}
 	e, err := p.parseExpr(false)
 	if err != nil {
@@ -156,9 +239,30 @@ func ParseExpr(input string) (Expr, error) {
 }
 
 type exprParser struct {
-	input string
-	pos   int
-	depth int
+	input       string
+	pos         int
+	depth       int
+	baseSource  string
+	baseLine    int
+	startCol    int
+	startOffset int
+}
+
+func (p *exprParser) spanAt(startPos int) Span {
+	col := 0
+	if p.startCol > 0 {
+		col = p.startCol + startPos
+	}
+	off := 0
+	if p.startOffset > 0 || p.baseLine > 0 {
+		off = p.startOffset + startPos
+	}
+	return Span{
+		Source: p.baseSource,
+		Line:   p.baseLine,
+		Column: col,
+		Offset: off,
+	}
 }
 
 func (p *exprParser) space() {
@@ -173,7 +277,7 @@ func (p *exprParser) parseExpr(argument bool) (Expr, error) {
 	}
 	p.space()
 	if p.pos >= len(p.input) {
-		return Literal{}, nil
+		return Literal{Span: p.spanAt(p.pos), Origin: OriginAuthored}, nil
 	}
 	if p.input[p.pos] == '"' {
 		return p.quoted()
@@ -196,7 +300,7 @@ func (p *exprParser) parseExpr(argument bool) (Expr, error) {
 			p.space()
 			if p.pos < len(p.input) && p.input[p.pos] == ')' {
 				p.pos++
-				return Call{Name: name}, nil
+				return Call{Name: name, Span: p.spanAt(start), Origin: OriginAuthored}, nil
 			}
 			for {
 				if p.pos >= len(p.input) || p.input[p.pos] == ',' || p.input[p.pos] == ')' {
@@ -213,7 +317,7 @@ func (p *exprParser) parseExpr(argument bool) (Expr, error) {
 				}
 				if p.input[p.pos] == ')' {
 					p.pos++
-					return Call{Name: name, Args: args}, nil
+					return Call{Name: name, Args: args, Span: p.spanAt(start), Origin: OriginAuthored}, nil
 				}
 				if p.input[p.pos] != ',' {
 					return nil, fmt.Errorf("expected comma or closing parenthesis at byte %d", p.pos)
@@ -240,7 +344,7 @@ func (p *exprParser) parseExpr(argument bool) (Expr, error) {
 		p.pos++
 	}
 	v := strings.TrimSpace(p.input[valueStart:p.pos])
-	return Literal{Value: v}, nil
+	return Literal{Value: v, Span: p.spanAt(valueStart), Origin: OriginAuthored}, nil
 }
 
 func (p *exprParser) quoted() (Expr, error) {
@@ -258,7 +362,7 @@ func (p *exprParser) quoted() (Expr, error) {
 			if err != nil {
 				return nil, fmt.Errorf("invalid quoted escape at byte %d", start)
 			}
-			return Literal{Value: v}, nil
+			return Literal{Value: v, Span: p.spanAt(start), Origin: OriginAuthored}, nil
 		}
 		p.pos++
 	}
