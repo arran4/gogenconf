@@ -74,6 +74,7 @@ type Stage string
 const (
 	StageParse    Stage = "parse"
 	StageMigrate  Stage = "migrate"
+	StageCompose  Stage = "compose"
 	StageResolve  Stage = "resolve"
 	StageConvert  Stage = "convert"
 	StageSanitize Stage = "sanitize"
@@ -394,6 +395,25 @@ func (d *Document) Delete(key string) bool {
 	return false
 }
 
+func (d *Document) DeleteSection(name string) bool {
+	deleted := false
+	for i, s := range d.Sections {
+		if s.Name == name {
+			d.Sections = append(d.Sections[:i], d.Sections[i+1:]...)
+			deleted = true
+			break
+		}
+	}
+	for i, it := range d.Items {
+		if s, ok := it.(*Section); ok && s.Name == name {
+			d.Items = append(d.Items[:i], d.Items[i+1:]...)
+			deleted = true
+			break
+		}
+	}
+	return deleted
+}
+
 // CheckCompatibility asserts that the document has the expected identity
 // and satisfies the specified maximum version constraint.
 func (d *Document) CheckCompatibility(expectedIdentity string, maxVersion int) error {
@@ -636,4 +656,23 @@ func (s *Section) Delete(key string) bool {
 		return true
 	}
 	return false
+}
+
+func (s *Section) DeleteSection(name string) bool {
+	deleted := false
+	for i, sub := range s.Sections {
+		if sub.Name == name {
+			s.Sections = append(s.Sections[:i], s.Sections[i+1:]...)
+			deleted = true
+			break
+		}
+	}
+	for i, it := range s.Items {
+		if sub, ok := it.(*Section); ok && sub.Name == name {
+			s.Items = append(s.Items[:i], s.Items[i+1:]...)
+			deleted = true
+			break
+		}
+	}
+	return deleted
 }
