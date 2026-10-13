@@ -464,6 +464,7 @@ project[~] lxa {
     arch[+] "riscv64"
     deprecated[-]
 }
+
 `
 
 	doc, err := gogenconf.ParseNamed(strings.NewReader(canonicalInput), "test_canonical.conf")
@@ -580,5 +581,16 @@ project[~] lxa {
 	rtProj := docRoundTrip.Section("project")
 	if rtProj == nil || rtProj.Section("lxa") == nil || rtProj.Section("lxa").Mutation != gogenconf.MutationMutate {
 		t.Fatalf("roundtrip mutation mismatch on lxa: got %v", rtProj)
+	}
+}
+
+func TestParseEmptyCompactBraceDeclaration(t *testing.T) {
+	doc, err := gogenconf.ParseNamed(strings.NewReader("config for go2gentoo version 1\n\nproject[-] lxa {}\n"), "delete.conf")
+	if err != nil {
+		t.Fatalf("parse empty compact declaration: %v", err)
+	}
+	project := doc.Section("project")
+	if project == nil || project.Section("lxa") == nil || project.Section("lxa").Mutation != gogenconf.MutationDelete {
+		t.Fatalf("empty compact declaration did not target lxa deletion: %#v", project)
 	}
 }

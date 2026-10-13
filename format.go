@@ -110,7 +110,7 @@ func ParseNamed(r io.Reader, sourceName string) (*Document, error) {
 		}
 
 		// 2. Opening brace '{' (named objects, anonymous objects, and compact paths)
-		beforeBrace, hasBrace, braceColOffset, err := findOpeningBrace(line)
+		beforeBrace, hasBrace, emptyBrace, braceColOffset, err := findOpeningBrace(line)
 		if err != nil {
 			return fail(lineCol, err.Error())
 		}
@@ -197,6 +197,10 @@ func ParseNamed(r io.Reader, sourceName string) (*Document, error) {
 					nextSec.Mutation = comp.mutation
 				}
 				sectionStack = append(sectionStack, nextSec)
+			}
+			if emptyBrace {
+				blockStack = blockStack[:len(blockStack)-1]
+				sectionStack = sectionStack[:len(sectionStack)-len(comps)]
 			}
 			lineOffset += len(rawLine) + 1
 			continue
@@ -450,7 +454,7 @@ func ParseNamed(r io.Reader, sourceName string) (*Document, error) {
 	return d, nil
 }
 
-func findOpeningBrace(line string) (string, bool, int, error) {
+func findOpeningBrace(line string) (string, bool, bool, int, error) {
 	n := len(line)
 	inQuote := false
 	escaped := false
@@ -481,14 +485,17 @@ func findOpeningBrace(line string) (string, bool, int, error) {
 		if c == '{' {
 			rem := strings.TrimSpace(line[i+1:])
 			if rem == "" || strings.HasPrefix(rem, "#") {
-				return strings.TrimSpace(line[:i]), true, i, nil
+				return strings.TrimSpace(line[:i]), true, false, i, nil
+			}
+			if rem == "}" {
+				return strings.TrimSpace(line[:i]), true, true, i, nil
 			}
 		}
 	}
 	if inQuote {
-		return "", false, 0, errors.New("unterminated quote")
+		return "", false, false, 0, errors.New("unterminated quote")
 	}
-	return "", false, 0, nil
+	return "", false, false, 0, nil
 }
 
 type pathComponent struct {
