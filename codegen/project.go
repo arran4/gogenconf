@@ -235,22 +235,11 @@ func (p *ProjectPlan) Execute(opts ProjectOptions) error {
 		return nil
 	}
 
-	// Atomically write all planned files
-	if err := p.Files.WriteToDir(outDir); err != nil {
-		return err
-	}
-
-	// Remove obsolete generated files if clean requested
+	obsolete := []string(nil)
 	if opts.Clean {
-		for _, obs := range p.ObsoleteFiles {
-			targetPath := filepath.Join(outDir, obs)
-			if err := os.Remove(targetPath); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("remove obsolete file %s: %w", obs, err)
-			}
-		}
+		obsolete = p.ObsoleteFiles
 	}
-
-	return nil
+	return p.Files.writeTransaction(outDir, obsolete)
 }
 
 // Summary returns a human-readable summary of the generation plan.
