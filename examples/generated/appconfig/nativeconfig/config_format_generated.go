@@ -17,19 +17,79 @@ func Format(d *Document) string {
 	write = func(items []Item, indent string) {
 		for _, item := range items {
 			switch v := item.(type) {
+			case Header:
+				if d.Identity != "" {
+					fmt.Fprintf(&b, "config for %s version %d\n", d.Identity, d.Version)
+				} else if d.HasVersion {
+					fmt.Fprintf(&b, "config_version %d\n", d.Version)
+				}
 			case Version:
-				if d.HasVersion {
+				if d.Identity != "" {
+					fmt.Fprintf(&b, "config for %s version %d\n", d.Identity, d.Version)
+				} else if d.HasVersion {
 					fmt.Fprintf(&b, "config_version %d\n", d.Version)
 				}
 			case *Section:
-				fmt.Fprintf(&b, "section %s\n", v.Name)
-				write(v.Items, "    ")
-				b.WriteString("end\n")
-			case Entry:
-				if v.Value == nil {
-					fmt.Fprintf(&b, "%s%s\n", indent, v.Key)
+				mutStr := ""
+				if v.Mutation != MutationNone {
+					mutStr = v.Mutation.String()
+				}
+				if v.Brace {
+					if v.Name == "" {
+						if mutStr != "" {
+							fmt.Fprintf(&b, "%s%s {\n", indent, mutStr)
+						} else {
+							fmt.Fprintf(&b, "%s{\n", indent)
+						}
+					} else if needsQuote(v.Name) {
+						fmt.Fprintf(&b, "%s%s%s {\n", indent, strconv.Quote(v.Name), mutStr)
+					} else {
+						fmt.Fprintf(&b, "%s%s%s {\n", indent, v.Name, mutStr)
+					}
+					subSections := false
+					for _, i := range v.Items {
+						if _, ok := i.(*Section); ok {
+							subSections = true
+							break
+						}
+					}
+					write(v.Items, indent+"    ")
+					if !subSections && len(v.Sections) > 0 {
+						for _, sub := range v.Sections {
+							write([]Item{sub}, indent+"    ")
+						}
+					}
+					fmt.Fprintf(&b, "%s}\n", indent)
 				} else {
-					fmt.Fprintf(&b, "%s%s %s\n", indent, v.Key, FormatExpr(v.Value))
+					if mutStr != "" {
+						fmt.Fprintf(&b, "%ssection%s %s\n", indent, mutStr, v.Name)
+					} else {
+						fmt.Fprintf(&b, "%ssection %s\n", indent, v.Name)
+					}
+					subSections := false
+					for _, i := range v.Items {
+						if _, ok := i.(*Section); ok {
+							subSections = true
+							break
+						}
+					}
+					write(v.Items, indent+"    ")
+					if !subSections && len(v.Sections) > 0 {
+						for _, sub := range v.Sections {
+							write([]Item{sub}, indent+"    ")
+						}
+					}
+					fmt.Fprintf(&b, "%send\n", indent)
+				}
+			case Entry:
+				mutStr := ""
+				if v.Mutation != MutationNone {
+					mutStr = v.Mutation.String()
+				}
+				if v.Value == nil {
+					fmt.Fprintf(&b, "%s%s%s\n", indent, v.Key, mutStr)
+				} else {
+					fmt.Fprintf(&b, "%s%s%s %s\n", indent, v.Key, mutStr, FormatExpr(v.Value))
 				}
 			case Comment:
 				marker := "#"
@@ -57,14 +117,18 @@ func Format(d *Document) string {
 	version, sections := false, false
 	for _, i := range d.Items {
 		switch i.(type) {
-		case Version:
+		case Header, Version:
 			version = true
 		case *Section:
 			sections = true
 		}
 	}
 	if d.HasVersion && !version {
-		fmt.Fprintf(&b, "config_version %d\n", d.Version)
+		if d.Identity != "" {
+			fmt.Fprintf(&b, "config for %s version %d\n", d.Identity, d.Version)
+		} else {
+			fmt.Fprintf(&b, "config_version %d\n", d.Version)
+		}
 	}
 	write(d.Items, "")
 	if !sections {
@@ -96,6 +160,32 @@ func FormatExpr(e Expr) string {
 		return e.Name + "(" + strings.Join(args, ", ") + ")"
 	case *Call:
 		return FormatExpr(*e)
+	case List:
+		items := make([]string, len(e.Items))
+		for i, a := range e.Items {
+			items[i] = FormatExpr(a)
+		}
+		return "[" + strings.Join(items, ", ") + "]"
+	case *List:
+		if e == nil {
+			return "[]"
+		}
+		return FormatExpr(*e)
+	case Map:
+		entries := make([]string, len(e.Entries))
+		for i, en := range e.Entries {
+			keyStr := en.Key
+			if !identifier(keyStr) {
+				keyStr = strconv.Quote(keyStr)
+			}
+			entries[i] = keyStr + ": " + FormatExpr(en.Value)
+		}
+		return "{" + strings.Join(entries, ", ") + "}"
+	case *Map:
+		if e == nil {
+			return "{}"
+		}
+		return FormatExpr(*e)
 	default:
 		return ""
 	}
@@ -106,9 +196,21 @@ func bareLiteral(v string) bool {
 		return false
 	}
 	for _, r := range v {
-		if unicode.IsSpace(r) || r == '(' || r == ')' || r == ',' || r == '"' || r == '\\' {
+		if unicode.IsSpace(r) || r == '(' || r == ')' || r == ',' || r == '"' || r == '\\' || r == '[' || r == ']' || r == '{' || r == '}' {
 			return false
 		}
 	}
 	return true
+}
+
+func needsQuote(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, c := range []byte(s) {
+		if !(c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || i > 0 && (c >= '0' && c <= '9' || c == '-' || c == '.' || c == '/')) {
+			return true
+		}
+	}
+	return false
 }
