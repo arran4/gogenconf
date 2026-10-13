@@ -920,3 +920,72 @@ project[+] worker {
 	}
 }
 
+func TestComposeCompactNamedMutationTargetsOnlyAddressedDeclaration(t *testing.T) {
+	base, err := gogenconf.ParseNamed(strings.NewReader(`config for go2gentoo version 1
+
+project lxa {
+	module_path github.com/arran4/lxa
+	build {
+		target ./cmd/lxa
+	}
+}
+
+project runner {
+	module_path github.com/arran4/runner
+}
+`), "base.conf")
+	if err != nil {
+		t.Fatalf("parse base: %v", err)
+	}
+
+	t.Run("delete", func(t *testing.T) {
+		override, err := gogenconf.ParseNamed(strings.NewReader(`config for go2gentoo version 1
+
+project[-] lxa {}
+`), "delete.conf")
+		if err != nil {
+			t.Fatalf("parse delete override: %v", err)
+		}
+		effective, err := gogenconf.Compose([]gogenconf.SourceLayer{
+			{Name: "base", Document: base, Priority: gogenconf.PriorityDefault},
+			{Name: "delete", Document: override, Priority: gogenconf.PriorityUser},
+		}, gogenconf.CompositionOptions{ExpectedIdentity: "go2gentoo", MaxVersion: 1})
+		if err != nil {
+			t.Fatalf("compose delete: %v", err)
+		}
+		if effective.SectionPath("project", "lxa") != nil {
+			t.Fatal("project[-] lxa retained lxa")
+		}
+		if effective.SectionPath("project", "runner") == nil {
+			t.Fatal("project[-] lxa removed unrelated runner")
+		}
+	})
+
+	t.Run("replace", func(t *testing.T) {
+		override, err := gogenconf.ParseNamed(strings.NewReader(`config for go2gentoo version 1
+
+project[=] lxa {
+	module_path github.com/arran4/lxa-v2
+}
+`), "replace.conf")
+		if err != nil {
+			t.Fatalf("parse replace override: %v", err)
+		}
+		effective, err := gogenconf.Compose([]gogenconf.SourceLayer{
+			{Name: "base", Document: base, Priority: gogenconf.PriorityDefault},
+			{Name: "replace", Document: override, Priority: gogenconf.PriorityUser},
+		}, gogenconf.CompositionOptions{ExpectedIdentity: "go2gentoo", MaxVersion: 1})
+		if err != nil {
+			t.Fatalf("compose replace: %v", err)
+		}
+		if got, ok := effective.PathValue("project", "lxa", "module_path").(gogenconf.Literal); !ok || got.Value != "github.com/arran4/lxa-v2" {
+			t.Fatalf("replaced lxa.module_path = %#v", effective.PathValue("project", "lxa", "module_path"))
+		}
+		if effective.SectionPath("project", "lxa", "build") != nil {
+			t.Fatal("project[=] lxa retained lxa's old build section")
+		}
+		if effective.SectionPath("project", "runner") == nil {
+			t.Fatal("project[=] lxa replaced unrelated runner")
+		}
+	})
+}
