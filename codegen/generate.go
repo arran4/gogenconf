@@ -88,13 +88,7 @@ func Validate(s m.Schema) error {
 			if err != nil || !tv.IsType() {
 				return fmt.Errorf("invalid Go type for %s.%s", sec.Name, f.Key)
 			}
-			switch f.GoType {
-			case "string", "[]byte", "[]string":
-			case "bool":
-				if !f.RuntimeOnly {
-					return fmt.Errorf("bool resolution requires an explicit mapping")
-				}
-			default:
+			if !supportedGeneratedType(f.GoType) {
 				return fmt.Errorf("unsupported type mapping %s", f.GoType)
 			}
 			if f.Policy != m.Eager && f.Policy != m.ProviderBacked {
@@ -106,9 +100,238 @@ func Validate(s m.Schema) error {
 			if _, err := expression(f.Default); err != nil {
 				return fmt.Errorf("%s.%s: %w", sec.Name, f.Key, err)
 			}
+			if err := validateGeneratedDefault(f.GoType, f.Default); err != nil {
+				return fmt.Errorf("%s.%s: %w", sec.Name, f.Key, err)
+			}
 		}
 	}
 	return nil
+}
+
+func supportedGeneratedType(goType string) bool {
+	elem, kind := m.ParseType(goType)
+	if kind != m.CollectionNone {
+		return supportedGeneratedType(elem)
+	}
+	switch strings.TrimSpace(goType) {
+	case "string", "[]byte", "bool",
+		"int", "int8", "int16", "int32", "int64",
+		"uint", "uint8", "uint16", "uint32", "uint64",
+		"float32", "float64":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateGeneratedDefault(goType string, expr m.Expr) error {
+	if expr == nil {
+		return nil
+	}
+	elem, kind := m.ParseType(goType)
+	if kind == m.CollectionOrdered {
+		switch v := expr.(type) {
+		case m.List:
+			for _, item := range v.Items {
+				if err := validateGeneratedDefault(elem, item); err != nil {
+					return err
+				}
+			}
+			return nil
+		case *m.List:
+			if v == nil {
+				return nil
+			}
+			return validateGeneratedDefault(goType, *v)
+		case m.Literal:
+			for _, item := range strings.Split(v.Value, ",") {
+				if err := validateGeneratedDefault(elem, m.Literal{Value: item}); err != nil {
+					return err
+				}
+			}
+			return nil
+		case *m.Literal:
+			if v == nil {
+				return nil
+			}
+			return validateGeneratedDefault(goType, *v)
+		default:
+			return fmt.Errorf("ordered default requires a list")
+		}
+	}
+	if kind == m.CollectionKeyed {
+		switch v := expr.(type) {
+		case m.Map:
+			for _, entry := range v.Entries {
+				if err := validateGeneratedDefault(elem, entry.Value); err != nil {
+					return err
+				}
+			}
+			return nil
+		case *m.Map:
+			if v == nil {
+				return nil
+			}
+			return validateGeneratedDefault(goType, *v)
+		default:
+			return fmt.Errorf("keyed default requires a map")
+		}
+	}
+	lit, ok := expr.(m.Literal)
+	if !ok {
+		if ptr, ok := expr.(*m.Literal); ok && ptr != nil {
+			lit = *ptr
+		} else {
+			return nil // resolver expressions are validated at load time.
+		}
+	}
+	_, err := parseLiteral(goType, lit.Value)
+	return err
+}
+
+// parseLiteral validates parser widths during generation. It deliberately
+// returns only an error: emitted code performs the corresponding conversion
+// so generated applications do not depend on this package at runtime.
+func parseLiteral(goType, value string) (any, error) {
+	switch goType {
+	case "string", "[]byte":
+		return value, nil
+	case "bool":
+		return strconv.ParseBool(value)
+	case "int":
+		return strconv.ParseInt(value, 0, strconv.IntSize)
+	case "int8":
+		return strconv.ParseInt(value, 0, 8)
+	case "int16":
+		return strconv.ParseInt(value, 0, 16)
+	case "int32":
+		return strconv.ParseInt(value, 0, 32)
+	case "int64":
+		return strconv.ParseInt(value, 0, 64)
+	case "uint":
+		return strconv.ParseUint(value, 0, strconv.IntSize)
+	case "uint8":
+		return strconv.ParseUint(value, 0, 8)
+	case "uint16":
+		return strconv.ParseUint(value, 0, 16)
+	case "uint32":
+		return strconv.ParseUint(value, 0, 32)
+	case "uint64":
+		return strconv.ParseUint(value, 0, 64)
+	case "float32":
+		return strconv.ParseFloat(value, 32)
+	case "float64":
+		return strconv.ParseFloat(value, 64)
+	default:
+		return nil, fmt.Errorf("unsupported generated type %q", goType)
+	}
+}
+
+// emitGeneratedDefault emits only static conversion code. Keeping this in the
+// generated binder makes the normal application path independent from the
+// generic library's reflection-based resolver.
+func emitGeneratedDefault(p func(string, ...any), dest, goType string, expr m.Expr, path string, sensitive bool) {
+	elem, kind := m.ParseType(goType)
+	switch kind {
+	case m.CollectionOrdered:
+		switch v := expr.(type) {
+		case m.List:
+			p("%s=make(%s,0,%d)\n", dest, goType, len(v.Items))
+			for _, item := range v.Items {
+				p("%s=append(%s,*new(%s))\n", dest, dest, elem)
+				emitGeneratedDefault(p, dest+"[len("+dest+")-1]", elem, item, path, sensitive)
+			}
+		case *m.List:
+			if v != nil {
+				emitGeneratedDefault(p, dest, goType, *v, path, sensitive)
+			}
+		case m.Literal:
+			emitGeneratedEnvironment(p, dest, goType, strconv.Quote(v.Value), path, sensitive)
+		case *m.Literal:
+			if v != nil {
+				emitGeneratedEnvironment(p, dest, goType, strconv.Quote(v.Value), path, sensitive)
+			}
+		}
+	case m.CollectionKeyed:
+		switch v := expr.(type) {
+		case m.Map:
+			p("%s=make(%s,%d)\n", dest, m.Field{GoType: goType}.ResolvedGoType(), len(v.Entries))
+			for _, entry := range v.Entries {
+				p("var defaultValue %s\n", elem)
+				emitGeneratedDefault(p, "defaultValue", elem, entry.Value, path+"."+entry.Key, sensitive)
+				p("%s[%q]=defaultValue\n", dest, entry.Key)
+			}
+		case *m.Map:
+			if v != nil {
+				emitGeneratedDefault(p, dest, goType, *v, path, sensitive)
+			}
+		}
+	default:
+		if v, ok := literalValue(expr); ok {
+			emitGeneratedScalar(p, dest, goType, strconv.Quote(v), path, sensitive)
+		}
+	}
+}
+
+func emitGeneratedEnvironment(p func(string, ...any), dest, goType, raw, path string, sensitive bool) {
+	elem, kind := m.ParseType(goType)
+	switch kind {
+	case m.CollectionOrdered:
+		p("{defaultItems:=strings.Split(%s,\",\");%s=make(%s,0,len(defaultItems));for _,defaultItem:=range defaultItems{%s=append(%s,*new(%s));", raw, dest, goType, dest, dest, elem)
+		emitGeneratedScalar(p, dest+"[len("+dest+")-1]", elem, "defaultItem", path, sensitive)
+		p("}}")
+	case m.CollectionKeyed:
+		// There is no unambiguous legacy environment encoding for keyed maps.
+		// A schema may still use static map defaults and document values.
+		p("_=%s", raw)
+	default:
+		emitGeneratedScalar(p, dest, goType, raw, path, sensitive)
+	}
+}
+
+func literalValue(expr m.Expr) (string, bool) {
+	switch v := expr.(type) {
+	case m.Literal:
+		return v.Value, true
+	case *m.Literal:
+		if v != nil {
+			return v.Value, true
+		}
+	}
+	return "", false
+}
+
+func emitGeneratedScalar(p func(string, ...any), dest, goType, raw, path string, sensitive bool) {
+	pathLit := strconv.Quote(path)
+	sensitiveLit := strconv.FormatBool(sensitive)
+	switch goType {
+	case "string":
+		p("%s=%s", dest, raw)
+	case "[]byte":
+		p("%s=[]byte(%s)", dest, raw)
+	case "bool":
+		p("parsed,err:=strconv.ParseBool(%s);if err!=nil{return c,defaultValueError(%s,%s,err)};%s=parsed", raw, pathLit, sensitiveLit, dest)
+	case "int":
+		emitGeneratedInteger(p, dest, raw, pathLit, sensitiveLit, "ParseInt", "strconv.IntSize", "int")
+	case "int8", "int16", "int32", "int64":
+		emitGeneratedInteger(p, dest, raw, pathLit, sensitiveLit, "ParseInt", goType[3:], goType)
+	case "uint":
+		emitGeneratedInteger(p, dest, raw, pathLit, sensitiveLit, "ParseUint", "strconv.IntSize", "uint")
+	case "uint8", "uint16", "uint32", "uint64":
+		emitGeneratedInteger(p, dest, raw, pathLit, sensitiveLit, "ParseUint", goType[4:], goType)
+	case "float32":
+		emitGeneratedFloat(p, dest, raw, pathLit, sensitiveLit, "32", goType)
+	case "float64":
+		emitGeneratedFloat(p, dest, raw, pathLit, sensitiveLit, "64", goType)
+	}
+}
+
+func emitGeneratedInteger(p func(string, ...any), dest, raw, path, sensitive, parser, bits, cast string) {
+	p("parsed,err:=strconv.%s(%s,0,%s);if err!=nil{return c,defaultValueError(%s,%s,err)};%s=%s(parsed)", parser, raw, bits, path, sensitive, dest, cast)
+}
+
+func emitGeneratedFloat(p func(string, ...any), dest, raw, path, sensitive, bits, cast string) {
+	p("parsed,err:=strconv.ParseFloat(%s,%s);if err!=nil{return c,defaultValueError(%s,%s,err)};%s=%s(parsed)", raw, bits, path, sensitive, dest, cast)
 }
 func exported(s string) bool { return token.IsIdentifier(s) && ast.IsExported(s) }
 
@@ -213,16 +436,16 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 	qual := ""
 	if binder {
 		if o.EmitAppAPI {
-			p("import(\"bytes\";\"context\";\"fmt\";\"io\";\"os\";\"strings\"; %s %q)\n", rtAlias, rtImport)
+			p("import(\"bytes\";\"context\";\"errors\";\"fmt\";\"io\";\"os\";\"strconv\";\"strings\"; %s %q)\n", rtAlias, rtImport)
 			p("var _ = bytes.NewReader\nvar _ = io.WriteString\nvar _ = os.Open\n")
 		} else {
-			p("import(\"context\";\"fmt\";\"strings\"; %s %q)\n", rtAlias, rtImport)
+			p("import(\"context\";\"errors\";\"fmt\";\"strconv\";\"strings\"; %s %q)\n", rtAlias, rtImport)
 		}
 		if !model {
 			p("import runtimeconfig %q\n", o.ConfigImport)
 			qual = "runtimeconfig."
 		}
-		p("var _ = strings.Join\nvar _ = fmt.Errorf\n")
+		p("var _ = strings.Join\nvar _ = fmt.Errorf\nvar _ = errors.New\nvar _ = strconv.IntSize\n")
 	} else {
 		usesProvider := false
 		for _, sec := range s.Sections {
@@ -253,7 +476,7 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 				if f.InputOnly {
 					continue
 				}
-				typ := f.GoType
+				typ := f.ResolvedGoType()
 				if f.Policy == m.ProviderBacked {
 					typ = rtAlias + ".Provider[" + typ + "]"
 				}
@@ -265,7 +488,8 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 	if !binder {
 		return format.Source(b.Bytes())
 	}
-	p("// Defaults returns concrete static defaults and optional legacy environment overrides.\nfunc Defaults(lookup %s.LookupEnv) %sConfig { var c %sConfig\n", rtAlias, qual, qual)
+	p("var ErrInvalidDefault=errors.New(\"invalid generated default\")\nfunc defaultValueError(path string,sensitive bool,err error)error{if sensitive{return fmt.Errorf(\"default %%s: %%w\",path,ErrInvalidDefault)};return fmt.Errorf(\"default %%s: %%w\",path,err)}\n")
+	p("// Defaults returns concrete static defaults and optional legacy environment overrides.\n// Invalid static or environment values are errors; they are never treated as omission.\nfunc Defaults(lookup %s.LookupEnv) (%sConfig,error) { var c %sConfig\n", rtAlias, qual, qual)
 	for _, sec := range s.Sections {
 		if sec.Repeated {
 			continue
@@ -275,15 +499,9 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 				continue
 			}
 			dest := "c." + sec.GoName + "." + f.GoName
-			if v, ok := f.Default.(m.Literal); ok {
-				switch f.GoType {
-				case "string":
-					p("%s=%q\n", dest, v.Value)
-				case "[]byte":
-					p("%s=[]byte(%q)\n", dest, v.Value)
-				case "[]string":
-					p("%s=strings.FieldsFunc(%q,func(r rune)bool{return r==','})\n", dest, v.Value)
-				}
+			if f.Default != nil {
+				emitGeneratedDefault(p, dest, f.GoType, f.Default, sec.Name+"."+f.Key, f.Sensitive)
+				p("\n")
 			}
 			if f.Environment != "" {
 				p("if lookup!=nil{if v,ok:=lookup(%q);ok", f.Environment)
@@ -291,19 +509,13 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 					p("&&v!=\"\"")
 				}
 				p("{")
-				switch f.GoType {
-				case "string":
-					p("%s=v", dest)
-				case "[]byte":
-					p("%s=[]byte(v)", dest)
-				case "[]string":
-					p("%s=strings.Split(v,\",\")", dest)
-				}
+				emitGeneratedEnvironment(p, dest, f.GoType, "v", sec.Name+"."+f.Key, f.Sensitive)
+				p(";")
 				p("}}\n")
 			}
 		}
 	}
-	p("return c}\n")
+	p("return c,nil}\n")
 	p("// Resolve constructs ordinary Go fields; provider policy alone defers resolution.\nfunc Resolve(ctx context.Context,d *%s.Document,r *%s.Registry,lookup %s.LookupEnv)(%sConfig,error){\nvar c %sConfig\nif d==nil{return c,fmt.Errorf(\"nil document\")}\nif d.Version>%d{return c,fmt.Errorf(\"unsupported future configuration version\")}\n", rtAlias, rtAlias, rtAlias, qual, qual, s.Version)
 	for _, sec := range s.Sections {
 		section := strconv.Quote(sec.Name)
@@ -326,7 +538,7 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 			if f.Policy == m.ProviderBacked {
 				p("%s.%s=%s.FieldProvider[%s](r,e,%q,%t)\n", dest, f.GoName, rtAlias, f.GoType, sec.Name+"."+f.Key, f.Sensitive)
 			} else {
-				p("value,err:=%s.ResolveField[%s](ctx,r,e,%q,%t);if err!=nil{return %sConfig{},err};%s.%s=value\n", rtAlias, f.GoType, sec.Name+"."+f.Key, f.Sensitive, qual, dest, f.GoName)
+				p("value,err:=%s.ResolveField[%s](ctx,r,e,%q,%t);if err!=nil{return %sConfig{},err};%s.%s=value\n", rtAlias, f.ResolvedGoType(), sec.Name+"."+f.Key, f.Sensitive, qual, dest, f.GoName)
 			}
 			p("}}\n")
 		}

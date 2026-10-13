@@ -4,19 +4,32 @@ package binding
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	gogenconf "github.com/arran4/gogenconf"
+	"strconv"
 	"strings"
 )
 import runtimeconfig "github.com/arran4/gogenconf/examples/generated/provider/appconfig"
 
 var _ = strings.Join
 var _ = fmt.Errorf
+var _ = errors.New
+var _ = strconv.IntSize
+var ErrInvalidDefault = errors.New("invalid generated default")
+
+func defaultValueError(path string, sensitive bool, err error) error {
+	if sensitive {
+		return fmt.Errorf("default %s: %w", path, ErrInvalidDefault)
+	}
+	return fmt.Errorf("default %s: %w", path, err)
+}
 
 // Defaults returns concrete static defaults and optional legacy environment overrides.
-func Defaults(lookup gogenconf.LookupEnv) runtimeconfig.Config {
+// Invalid static or environment values are errors; they are never treated as omission.
+func Defaults(lookup gogenconf.LookupEnv) (runtimeconfig.Config, error) {
 	var c runtimeconfig.Config
-	return c
+	return c, nil
 }
 
 // Resolve constructs ordinary Go fields; provider policy alone defers resolution.

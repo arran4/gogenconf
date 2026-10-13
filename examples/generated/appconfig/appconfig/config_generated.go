@@ -5,10 +5,12 @@ package appconfig
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	nativeconfig "github.com/arran4/gogenconf/examples/generated/appconfig/nativeconfig"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -17,6 +19,8 @@ var _ = io.WriteString
 var _ = os.Open
 var _ = strings.Join
 var _ = fmt.Errorf
+var _ = errors.New
+var _ = strconv.IntSize
 
 type Config struct {
 	Service ServiceConfig
@@ -31,11 +35,21 @@ type WorkerConfig struct {
 	Concurrency string
 }
 
+var ErrInvalidDefault = errors.New("invalid generated default")
+
+func defaultValueError(path string, sensitive bool, err error) error {
+	if sensitive {
+		return fmt.Errorf("default %s: %w", path, ErrInvalidDefault)
+	}
+	return fmt.Errorf("default %s: %w", path, err)
+}
+
 // Defaults returns concrete static defaults and optional legacy environment overrides.
-func Defaults(lookup nativeconfig.LookupEnv) Config {
+// Invalid static or environment values are errors; they are never treated as omission.
+func Defaults(lookup nativeconfig.LookupEnv) (Config, error) {
 	var c Config
 	c.Service.Endpoint = "https://api.internal.net"
-	return c
+	return c, nil
 }
 
 // Resolve constructs ordinary Go fields; provider policy alone defers resolution.
