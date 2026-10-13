@@ -406,6 +406,18 @@ func TestOverlayIsolatedConsumerCompilation(t *testing.T) {
 
 package {{.Package}}
 
+// Origin and Span are part of the generated document/expr template contract.
+// A full document-template replacement must provide them when the selected
+// expression template carries source provenance.
+type Origin uint8
+
+type Span struct {
+	Source string
+	Line   int
+	Column int
+	Offset int
+}
+
 type Document struct {
 	Items []string
 }
