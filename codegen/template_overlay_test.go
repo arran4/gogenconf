@@ -411,6 +411,13 @@ package {{.Package}}
 // expression template carries source provenance.
 type Origin uint8
 
+const (
+	OriginAuthored Origin = iota
+	OriginDefaulted
+	OriginEnriched
+	OriginMigrated
+)
+
 type Span struct {
 	Source string
 	Line   int
