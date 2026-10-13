@@ -111,6 +111,21 @@ func TestGenerateAppAPIStructure(t *testing.T) {
 	}
 }
 
+func TestGeneratedValidationChecksIdentityAndStrictDuplicates(t *testing.T) {
+	s := sampleSchema()
+	s.Identity = "example-schema"
+	generated, err := codegen.GenerateAppAPI(s, codegen.Options{Package: "myconfig", LibraryImport: "github.com/arran4/gogenconf"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(generated)
+	for _, want := range []string{"d.Identity != \"example\"", "duplicate unresolved field", "StageBind", "HeaderSpan"} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("generated validation missing %q", want)
+		}
+	}
+}
+
 func TestGenerateAppAPICompilationAndRuntime(t *testing.T) {
 	s := sampleSchema()
 

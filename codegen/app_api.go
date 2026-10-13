@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	m "github.com/arran4/gogenconf"
+	"strings"
 )
 
 // GenerateAppAPI emits a complete schema-specialized application configuration API,
@@ -17,6 +18,7 @@ func GenerateAppAPI(s m.Schema, o Options) ([]byte, error) {
 
 func emitAppAPI(b *bytes.Buffer, s m.Schema, o Options, qual, rtAlias string) error {
 	p := func(f string, a ...any) { fmt.Fprintf(b, f, a...) }
+	configIdentity := strings.TrimSuffix(s.Identity, "-schema")
 
 	p("// SchemaVersion is the current supported configuration version for this schema.\n")
 	p("const SchemaVersion = %d\n\n", s.Version)
@@ -233,6 +235,12 @@ func Validate(d *%s.Document, strict bool) error {
 		return fmt.Errorf("configuration version %%d is newer than supported version %%d", d.Version, SchemaVersion)
 	}
 `, rtAlias)
+	if configIdentity != "" {
+		p(`	if d.Identity != %q {
+		return &%s.ConfigError{Stage: %s.StageValidate, Source: d.HeaderSpan, Err: fmt.Errorf("expected config identity %%q, got %%q", %q, d.Identity)}
+	}
+`, configIdentity, rtAlias, rtAlias, configIdentity)
+	}
 
 	for _, sec := range s.Sections {
 		hasRequired := false
@@ -283,6 +291,7 @@ func Validate(d *%s.Document, strict bool) error {
 
 	p(`	if strict {
 		for _, s := range d.Sections {
+			seen := map[string]bool{}
 			switch {
 `)
 	for _, sec := range s.Sections {
@@ -299,6 +308,10 @@ func Validate(d *%s.Document, strict bool) error {
 			}
 			for _, item := range s.Items {
 				if entry, ok := item.(%s.Entry); ok {
+					if seen[entry.Key] {
+						return &%s.ConfigError{Stage: %s.StageBind, Path: s.Name + "." + entry.Key, Source: entry.Span, Err: fmt.Errorf("duplicate unresolved field")}
+					}
+					seen[entry.Key] = true
 					if _, ok := Field(s.Name, entry.Key); !ok {
 						return fmt.Errorf("unknown field %%q in section %%q", entry.Key, s.Name)
 					}
@@ -308,7 +321,7 @@ func Validate(d *%s.Document, strict bool) error {
 	}
 	return nil
 }
-`, rtAlias)
+`, rtAlias, rtAlias, rtAlias)
 
 	// Inspect functions
 	p(`// Inspect returns a redacted copy of d where sensitive literals and calls are redacted.

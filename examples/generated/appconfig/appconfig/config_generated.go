@@ -442,6 +442,7 @@ func Validate(d *nativeconfig.Document, strict bool) error {
 	}
 	if strict {
 		for _, s := range d.Sections {
+			seen := map[string]bool{}
 			switch {
 			case s.Name == "service":
 			case strings.HasPrefix(s.Name, "worker "):
@@ -450,6 +451,10 @@ func Validate(d *nativeconfig.Document, strict bool) error {
 			}
 			for _, item := range s.Items {
 				if entry, ok := item.(nativeconfig.Entry); ok {
+					if seen[entry.Key] {
+						return &nativeconfig.ConfigError{Stage: nativeconfig.StageBind, Path: s.Name + "." + entry.Key, Source: entry.Span, Err: fmt.Errorf("duplicate unresolved field")}
+					}
+					seen[entry.Key] = true
 					if _, ok := Field(s.Name, entry.Key); !ok {
 						return fmt.Errorf("unknown field %q in section %q", entry.Key, s.Name)
 					}
