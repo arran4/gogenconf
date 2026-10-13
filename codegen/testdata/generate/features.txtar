@@ -31,6 +31,9 @@ var _ = strings.Join
 var _ = fmt.Errorf
 var _ = errors.New
 var _ = strconv.IntSize
+
+type decoderOptions struct{}
+
 var ErrInvalidDefault = errors.New("invalid generated default")
 
 func defaultValueError(path string, sensitive bool, err error) error {
@@ -236,6 +239,9 @@ func decodeWorkersArgs(ctx context.Context, r *gogenconf.Registry, e gogenconf.E
 
 // Resolve constructs ordinary Go fields; provider policy alone defers resolution.
 func Resolve(ctx context.Context, d *gogenconf.Document, r *gogenconf.Registry, lookup gogenconf.LookupEnv) (runtimeconfig.Config, error) {
+	return resolveWithOptions(ctx, d, r, lookup, decoderOptions{})
+}
+func resolveWithOptions(ctx context.Context, d *gogenconf.Document, r *gogenconf.Registry, lookup gogenconf.LookupEnv, options decoderOptions) (runtimeconfig.Config, error) {
 	var c runtimeconfig.Config
 	if d == nil {
 		return c, fmt.Errorf("nil document")

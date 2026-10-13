@@ -587,7 +587,7 @@ func FormatSchema(identity string, s *Schema) string {
 				fmt.Fprintf(&b, "        go_name %s\n", f.GoName)
 			}
 			if f.Parser != "" {
-				fmt.Fprintf(&b, "        parser %s\n", f.Parser)
+				fmt.Fprintf(&b, "        parser %s\n", FormatExpr(Literal{Value: f.Parser}))
 			}
 			if f.Default != nil {
 				fmt.Fprintf(&b, "        default %s\n", FormatExpr(f.Default))

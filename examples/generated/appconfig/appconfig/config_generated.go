@@ -37,6 +37,7 @@ type WorkerConfig struct {
 	Name        string
 	Concurrency string
 }
+type decoderOptions struct{}
 
 var ErrInvalidDefault = errors.New("invalid generated default")
 
@@ -141,6 +142,9 @@ func decodeWorkersConcurrency(ctx context.Context, r *nativeconfig.Registry, e n
 
 // Resolve constructs ordinary Go fields; provider policy alone defers resolution.
 func Resolve(ctx context.Context, d *nativeconfig.Document, r *nativeconfig.Registry, lookup nativeconfig.LookupEnv) (Config, error) {
+	return resolveWithOptions(ctx, d, r, lookup, decoderOptions{})
+}
+func resolveWithOptions(ctx context.Context, d *nativeconfig.Document, r *nativeconfig.Registry, lookup nativeconfig.LookupEnv, options decoderOptions) (Config, error) {
 	var c Config
 	if d == nil {
 		return c, fmt.Errorf("nil document")
@@ -296,11 +300,13 @@ func Resolve(ctx context.Context, d *nativeconfig.Document, r *nativeconfig.Regi
 const SchemaVersion = 2
 
 type LoadOptions struct {
+	decoderOptions
 	Registry   *nativeconfig.Registry
 	LookupEnv  nativeconfig.LookupEnv
 	Migrations *Migrations
 	Strict     bool
 	SkipEnrich bool
+	optionErr  error
 }
 
 type LoadOption func(*LoadOptions)
@@ -338,9 +344,15 @@ func Load(ctx context.Context, d *nativeconfig.Document, opts ...LoadOption) (Co
 	}
 	var options LoadOptions
 	for _, opt := range opts {
+		if opt == nil {
+			return Config{}, fmt.Errorf("nil load option")
+		}
 		opt(&options)
 	}
 	working := d.Clone()
+	if options.optionErr != nil {
+		return Config{}, options.optionErr
+	}
 	if options.Migrations != nil {
 		if err := options.Migrations.Apply(working, SchemaVersion); err != nil {
 			return Config{}, fmt.Errorf("migration failed: %w", err)
@@ -366,7 +378,7 @@ func Load(ctx context.Context, d *nativeconfig.Document, opts ...LoadOption) (Co
 	if lookup == nil {
 		lookup = os.LookupEnv
 	}
-	cfg, err := Resolve(ctx, working, r, lookup)
+	cfg, err := resolveWithOptions(ctx, working, r, lookup, options.decoderOptions)
 	if err != nil {
 		return Config{}, err
 	}

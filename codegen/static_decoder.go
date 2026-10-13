@@ -37,6 +37,14 @@ func emitStaticDecoder(p func(string, ...any), fn, goType string, ti TypeInfo, r
 	emitStaticScalarDecoder(p, fn, goType, ti, rtAlias, path, sensitive)
 }
 
+// emitStaticParserDecoder emits a narrow field-specific bridge for an
+// application-owned expression parser. The native runtime still owns parsing
+// the outer document; this adapter receives only the already-bounded Expr and
+// its span. It never discovers parsers dynamically.
+func emitStaticParserDecoder(p func(string, ...any), fn, goType, parserType, rtAlias, path string, sensitive bool) {
+	p("func %s(e %s.Expr,parse %s)(%s,error){var out %s;if parse==nil{return out,decodeValueError(%q,%t,%s.SpanOf(e),fmt.Errorf(%q))};raw:=%s.FormatExpr(e);switch call:=e.(type){case %s.Call:if len(call.Args)==1{if literal,ok:=call.Args[0].(%s.Literal);ok{raw=literal.Value}};case *%s.Call:if call!=nil&&len(call.Args)==1{if literal,ok:=call.Args[0].(%s.Literal);ok{raw=literal.Value}}};if len(raw)>65536{return out,decodeValueError(%q,%t,%s.SpanOf(e),fmt.Errorf(\"custom expression exceeds 65536 bytes\"))};value,err:=parse(raw,%s.SpanOf(e));if err!=nil{return out,decodeValueError(%q,%t,%s.SpanOf(e),err)};return value,nil}\n", fn, rtAlias, parserType, goType, goType, path, sensitive, rtAlias, "missing required parser "+parserType, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, path, sensitive, rtAlias, rtAlias, path, sensitive, rtAlias)
+}
+
 func staticDecoderCall(fn string, ti TypeInfo) string {
 	return fn
 }

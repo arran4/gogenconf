@@ -101,6 +101,7 @@ func Validate(s m.Schema) error {
 			return fmt.Errorf("root.%s: %w", f.Key, err)
 		}
 	}
+	parserNames := map[string]string{}
 	for _, sec := range s.Sections {
 		if sec.Name == "" || paths[sec.Name] {
 			return fmt.Errorf("duplicate or empty section %q", sec.Name)
@@ -140,8 +141,15 @@ func Validate(s m.Schema) error {
 			if !exported(f.GoName) || fields[f.GoName] {
 				return fmt.Errorf("invalid or duplicate field mapping %s.%s", sec.GoName, f.GoName)
 			}
-			if f.Parser != "" && !exported(f.Parser) {
-				return fmt.Errorf("invalid parser mapping %s.%s", sec.Name, f.Key)
+			if f.Parser != "" {
+				symbol, err := parserSymbol(f.Parser)
+				if err != nil {
+					return fmt.Errorf("invalid parser mapping %s.%s: %w", sec.Name, f.Key, err)
+				}
+				if previous, exists := parserNames[symbol]; exists && previous != f.Parser {
+					return fmt.Errorf("parser names %q and %q both map to generated symbol %s", previous, f.Parser, symbol)
+				}
+				parserNames[symbol] = f.Parser
 			}
 			fields[f.GoName] = true
 			if !f.RuntimeOnly {
@@ -604,6 +612,10 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 	if err := Validate(s); err != nil {
 		return nil, err
 	}
+	parsers, err := parserDefinitions(s)
+	if err != nil {
+		return nil, err
+	}
 	if !token.IsIdentifier(o.Package) || o.Package == "_" {
 		return nil, fmt.Errorf("invalid package")
 	}
@@ -669,6 +681,19 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 	}
 	if !binder {
 		return format.Source(b.Bytes())
+	}
+	if len(parsers) > 0 {
+		for _, parser := range parsers {
+			p("// %sFunc parses the bounded canonical expression for schema parser %q.\n", parser.Symbol, parser.Name)
+			p("type %sFunc func(raw string,span %s.Span)(%s,error)\n", parser.Symbol, rtAlias, parser.GoType)
+		}
+		p("type decoderOptions struct{\n")
+		for _, parser := range parsers {
+			p("%s %sFunc\n%sSet bool\n", parser.Symbol, parser.Symbol, strings.ToLower(parser.Symbol[:1])+parser.Symbol[1:])
+		}
+		p("}\n")
+	} else {
+		p("type decoderOptions struct{}\n")
 	}
 	p("var ErrInvalidDefault=errors.New(\"invalid generated default\")\nfunc defaultValueError(path string,sensitive bool,err error)error{if sensitive{return fmt.Errorf(\"default %%s: %%w\",path,ErrInvalidDefault)};return fmt.Errorf(\"default %%s: %%w\",path,err)}\n")
 	p("// Defaults returns concrete static defaults and optional legacy environment overrides.\n// Invalid static or environment values are errors; they are never treated as omission.\nfunc Defaults(lookup %s.LookupEnv) (%sConfig,error) { var c %sConfig\n", rtAlias, qual, qual)
@@ -748,7 +773,7 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 			return nil, err
 		}
 	}
-	p("// Resolve constructs ordinary Go fields; provider policy alone defers resolution.\nfunc Resolve(ctx context.Context,d *%s.Document,r *%s.Registry,lookup %s.LookupEnv)(%sConfig,error){\nvar c %sConfig\nif d==nil{return c,fmt.Errorf(\"nil document\")}\nif d.Version>%d{return c,fmt.Errorf(\"unsupported future configuration version\")}\n", rtAlias, rtAlias, rtAlias, qual, qual, s.Version)
+	p("// Resolve constructs ordinary Go fields; provider policy alone defers resolution.\nfunc Resolve(ctx context.Context,d *%s.Document,r *%s.Registry,lookup %s.LookupEnv)(%sConfig,error){return resolveWithOptions(ctx,d,r,lookup,decoderOptions{})}\nfunc resolveWithOptions(ctx context.Context,d *%s.Document,r *%s.Registry,lookup %s.LookupEnv,options decoderOptions)(%sConfig,error){\nvar c %sConfig\nif d==nil{return c,fmt.Errorf(\"nil document\")}\nif d.Version>%d{return c,fmt.Errorf(\"unsupported future configuration version\")}\n", rtAlias, rtAlias, rtAlias, qual, rtAlias, rtAlias, rtAlias, qual, qual, s.Version)
 	for _, f := range s.RootFields {
 		if f.InputOnly || f.RuntimeOnly {
 			continue
@@ -796,7 +821,12 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 				p("%s.%s=%s.FieldProvider[%s](r,e,%q,%t)\n", dest, f.GoName, rtAlias, f.ResolvedGoType(), sec.Name+"."+f.Key, f.Sensitive)
 			} else {
 				ti, _ := ClassifyType(f.GoType)
-				p("value,err:=%s(ctx,r,e)\n", staticDecoderCall(staticDecoderName(sec.GoName, f.GoName), ti))
+				if f.Parser != "" {
+					symbol, _ := parserSymbol(f.Parser)
+					p("value,err:=%s(e,options.%s)\n", staticDecoderName(sec.GoName, f.GoName), symbol)
+				} else {
+					p("value,err:=%s(ctx,r,e)\n", staticDecoderCall(staticDecoderName(sec.GoName, f.GoName), ti))
+				}
 				p("if err!=nil{return %sConfig{},err}\n", qual)
 				if f.Sensitive {
 					p("if s,ok:=any(&value).(interface{SanitizeConfig()error});ok{if err:=s.SanitizeConfig();err!=nil{return %sConfig{},fmt.Errorf(\"sanitize %%s: failed\", %q)}}\n", qual, sec.Name+"."+f.Key)
