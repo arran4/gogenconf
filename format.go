@@ -85,6 +85,37 @@ func ParseNamed(r io.Reader, sourceName string) (*Document, error) {
 		}
 		keyCol := lineCol
 		switch key {
+		case "config":
+			if section != nil || d.HasVersion {
+				return fail(keyCol, "config header must occur once at root")
+			}
+			fields := strings.Fields(tail)
+			if len(fields) != 4 || fields[0] != "for" || fields[2] != "version" {
+				return fail(keyCol, "invalid config header: expected 'config for <identity> version <number>'")
+			}
+			identity := fields[1]
+			if !validIdentity(identity) {
+				return fail(keyCol, fmt.Sprintf("invalid configuration identity %q", identity))
+			}
+			v, err := strconv.Atoi(fields[3])
+			if err != nil || v < 0 {
+				return fail(keyCol, "invalid config version in header")
+			}
+			d.Identity = identity
+			d.Version = v
+			d.HasVersion = true
+			headerSpan := Span{
+				Source: sourceName,
+				Line:   lineNo,
+				Column: keyCol,
+				Offset: lineOffset + keyCol - 1,
+			}
+			d.HeaderSpan = headerSpan
+			d.Items = append(d.Items, Header{
+				Identity: identity,
+				Version:  v,
+				Span:     headerSpan,
+			})
 		case "config_version":
 			if section != nil || d.HasVersion {
 				return fail(keyCol, "config_version must occur once at root")
@@ -95,6 +126,13 @@ func ParseNamed(r io.Reader, sourceName string) (*Document, error) {
 			}
 			d.Version = v
 			d.HasVersion = true
+			headerSpan := Span{
+				Source: sourceName,
+				Line:   lineNo,
+				Column: keyCol,
+				Offset: lineOffset + keyCol - 1,
+			}
+			d.HeaderSpan = headerSpan
 			d.Items = append(d.Items, Version{})
 		case "section":
 			if section != nil || tail == "" {
@@ -125,6 +163,10 @@ func ParseNamed(r io.Reader, sourceName string) (*Document, error) {
 			}
 			if section != nil {
 				if _, _, ok := section.Entry(key); ok {
+					return fail(keyCol, "duplicate field")
+				}
+			} else {
+				if _, _, ok := d.Entry(key); ok {
 					return fail(keyCol, "duplicate field")
 				}
 			}
@@ -189,6 +231,18 @@ func identifier(s string) bool {
 	return true
 }
 
+func validIdentity(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, c := range []byte(s) {
+		if !(c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || i > 0 && (c >= '0' && c <= '9' || c == '-' || c == '.' || c == '/')) {
+			return false
+		}
+	}
+	return true
+}
+
 // Format never resolves values and retains the position of every root item,
 // including comments between sections and trailing comments.
 func Format(d *Document) string {
@@ -197,8 +251,16 @@ func Format(d *Document) string {
 	write = func(items []Item, indent string) {
 		for _, item := range items {
 			switch v := item.(type) {
+			case Header:
+				if d.Identity != "" {
+					fmt.Fprintf(&b, "config for %s version %d\n", d.Identity, d.Version)
+				} else if d.HasVersion {
+					fmt.Fprintf(&b, "config_version %d\n", d.Version)
+				}
 			case Version:
-				if d.HasVersion {
+				if d.Identity != "" {
+					fmt.Fprintf(&b, "config for %s version %d\n", d.Identity, d.Version)
+				} else if d.HasVersion {
 					fmt.Fprintf(&b, "config_version %d\n", d.Version)
 				}
 			case *Section:
@@ -237,14 +299,18 @@ func Format(d *Document) string {
 	version, sections := false, false
 	for _, i := range d.Items {
 		switch i.(type) {
-		case Version:
+		case Header, Version:
 			version = true
 		case *Section:
 			sections = true
 		}
 	}
 	if d.HasVersion && !version {
-		fmt.Fprintf(&b, "config_version %d\n", d.Version)
+		if d.Identity != "" {
+			fmt.Fprintf(&b, "config for %s version %d\n", d.Identity, d.Version)
+		} else {
+			fmt.Fprintf(&b, "config_version %d\n", d.Version)
+		}
 	}
 	write(d.Items, "")
 	if !sections {

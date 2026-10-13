@@ -158,9 +158,20 @@ type Version struct{}
 
 func (Version) item() {}
 
+// Header records the self-describing configuration identity and version.
+type Header struct {
+	Identity string
+	Version  int
+	Span     Span
+}
+
+func (Header) item() {}
+
 type Document struct {
+	Identity   string
 	Version    int
 	HasVersion bool
+	HeaderSpan Span
 	Items      []Item
 	Sections   []*Section
 }
@@ -172,6 +183,18 @@ func (d *Document) Section(name string) *Section {
 		}
 	}
 	return nil
+}
+
+func (d *Document) Entry(key string) (Entry, int, bool) {
+	if d == nil {
+		return Entry{}, -1, false
+	}
+	for i, item := range d.Items {
+		if e, ok := item.(Entry); ok && e.Key == key {
+			return e, i, true
+		}
+	}
+	return Entry{}, -1, false
 }
 
 func (s *Section) Entry(key string) (Entry, int, bool) {
@@ -203,11 +226,71 @@ func (d *Document) AddSection(s *Section) {
 }
 
 func (d *Document) Value(section, key string) Expr {
+	if section == "" {
+		e, _, ok := d.Entry(key)
+		if !ok {
+			return nil
+		}
+		return e.Value
+	}
 	e, _, ok := d.Section(section).Entry(key)
 	if !ok {
 		return nil
 	}
 	return e.Value
+}
+
+func (d *Document) Set(key string, value Expr) {
+	if old, i, ok := d.Entry(key); ok {
+		d.Items[i] = Entry{Key: key, Value: value, Span: old.Span, Origin: OriginMigrated}
+		return
+	}
+	d.Items = append(d.Items, Entry{Key: key, Value: value, Origin: OriginMigrated})
+}
+
+func (d *Document) Delete(key string) bool {
+	if _, i, ok := d.Entry(key); ok {
+		d.Items = append(d.Items[:i], d.Items[i+1:]...)
+		return true
+	}
+	return false
+}
+
+// CheckCompatibility asserts that the document has the expected identity
+// and satisfies the specified maximum version constraint.
+func (d *Document) CheckCompatibility(expectedIdentity string, maxVersion int) error {
+	if d.Identity != expectedIdentity {
+		var actual string
+		if d.Identity == "" {
+			if !d.HasVersion {
+				actual = "unversioned document"
+			} else {
+				actual = fmt.Sprintf("legacy config_version %d", d.Version)
+			}
+		} else {
+			actual = fmt.Sprintf("config for %s version %d", d.Identity, d.Version)
+		}
+		return &ConfigError{
+			Stage:  StageValidate,
+			Source: d.HeaderSpan,
+			Err:    fmt.Errorf("expected config for %s version <= %d; got %s", expectedIdentity, maxVersion, actual),
+		}
+	}
+	if d.Version > maxVersion {
+		return &ConfigError{
+			Stage:  StageValidate,
+			Source: d.HeaderSpan,
+			Err:    fmt.Errorf("expected config for %s version <= %d; got version %d", expectedIdentity, maxVersion, d.Version),
+		}
+	}
+	if d.Version < 0 {
+		return &ConfigError{
+			Stage:  StageValidate,
+			Source: d.HeaderSpan,
+			Err:    fmt.Errorf("invalid version %d", d.Version),
+		}
+	}
+	return nil
 }
 
 func CloneExpr(e Expr) Expr {
@@ -245,7 +328,12 @@ func CloneExpr(e Expr) Expr {
 // Clone owns all slices and expression nodes, so migrations and providers do
 // not share mutable declarations with the editing document.
 func (d *Document) Clone() *Document {
-	out := &Document{Version: d.Version, HasVersion: d.HasVersion}
+	out := &Document{
+		Identity:   d.Identity,
+		Version:    d.Version,
+		HasVersion: d.HasVersion,
+		HeaderSpan: d.HeaderSpan,
+	}
 	sections := map[*Section]*Section{}
 	cloneItems := func(items []Item) []Item {
 		result := make([]Item, 0, len(items))
