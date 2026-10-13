@@ -24,6 +24,7 @@ var _ = time.Second
 var _ = strings.Join
 var _ = fmt.Errorf
 var _ = errors.New
+var _ = strconv.IntSize
 var ErrInvalidDefault = errors.New("invalid generated default")
 
 func defaultValueError(path string, sensitive bool, err error) error {
@@ -37,9 +38,7 @@ func defaultValueError(path string, sensitive bool, err error) error {
 // Invalid static or environment values are errors; they are never treated as omission.
 func Defaults(lookup gogenconf.LookupEnv) (runtimeconfig.Config, error) {
 	var c runtimeconfig.Config
-	{
-		c.Service.Endpoint = "https://example.test"
-	}
+	c.Service.Endpoint = "https://example.test"
 	return c, nil
 }
 

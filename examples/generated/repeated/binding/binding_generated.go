@@ -24,6 +24,7 @@ var _ = time.Second
 var _ = strings.Join
 var _ = fmt.Errorf
 var _ = errors.New
+var _ = strconv.IntSize
 var ErrInvalidDefault = errors.New("invalid generated default")
 
 func defaultValueError(path string, sensitive bool, err error) error {

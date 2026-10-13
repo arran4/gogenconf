@@ -23,6 +23,7 @@ var _ = time.Second
 var _ = strings.Join
 var _ = fmt.Errorf
 var _ = errors.New
+var _ = strconv.IntSize
 
 type Config struct {
 	Service ServiceConfig
@@ -50,9 +51,7 @@ func defaultValueError(path string, sensitive bool, err error) error {
 // Invalid static or environment values are errors; they are never treated as omission.
 func Defaults(lookup nativeconfig.LookupEnv) (Config, error) {
 	var c Config
-	{
-		c.Service.Endpoint = "https://api.internal.net"
-	}
+	c.Service.Endpoint = "https://api.internal.net"
 	return c, nil
 }
 
