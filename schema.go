@@ -13,6 +13,46 @@ const (
 	ProviderBacked ResolutionPolicy = "provider"
 )
 
+// CollectionKind identifies whether a schema field represents a scalar,
+// an ordered collection ([]T), or a string-keyed map ([$]T).
+type CollectionKind string
+
+const (
+	CollectionNone    CollectionKind = ""
+	CollectionOrdered CollectionKind = "list" // []T
+	CollectionKeyed   CollectionKind = "map"  // [$]T: string-keyed map ($ is shorthand for string key)
+)
+
+// ParseType inspects a schema type signature and classifies its collection kind
+// and element type. In gogenconf schema conventions:
+//   - "[]T" indicates an ordered collection of T
+//   - "[$]T" or "map[string]T" indicates a string-keyed map of T ($ is shorthand for string key)
+func ParseType(goType string) (elemType string, kind CollectionKind) {
+	trimmed := strings.TrimSpace(goType)
+	if strings.HasPrefix(trimmed, "[$]") {
+		return strings.TrimSpace(trimmed[3:]), CollectionKeyed
+	}
+	if strings.HasPrefix(trimmed, "map[string]") {
+		return strings.TrimSpace(trimmed[len("map[string]"):len(trimmed)]), CollectionKeyed
+	}
+	if strings.HasPrefix(trimmed, "[]") && !strings.HasPrefix(trimmed, "[]byte") {
+		return strings.TrimSpace(trimmed[2:]), CollectionOrdered
+	}
+	return trimmed, CollectionNone
+}
+
+// CanonicalType formats an element type and collection kind into standard gogenconf notation.
+func CanonicalType(elemType string, kind CollectionKind) string {
+	switch kind {
+	case CollectionOrdered:
+		return "[]" + elemType
+	case CollectionKeyed:
+		return "[$]" + elemType
+	default:
+		return elemType
+	}
+}
+
 // Field describes content and static Go mapping. RuntimeOnly fields belong to
 // the generated struct but cannot be configured through the document.
 type Field struct {
@@ -30,6 +70,38 @@ type Field struct {
 	Environment         string
 	EnvironmentNonEmpty bool
 }
+
+// IsCollection reports whether the field is an ordered list or keyed map.
+func (f Field) IsCollection() bool {
+	_, kind := ParseType(f.GoType)
+	return kind != CollectionNone
+}
+
+// CollectionKind returns the collection kind of this field.
+func (f Field) CollectionKind() CollectionKind {
+	_, kind := ParseType(f.GoType)
+	return kind
+}
+
+// ElementType returns the element type if this field is a collection.
+func (f Field) ElementType() string {
+	elem, _ := ParseType(f.GoType)
+	return elem
+}
+
+// ResolvedGoType returns the standard Go type representation for code generation.
+func (f Field) ResolvedGoType() string {
+	elem, kind := ParseType(f.GoType)
+	switch kind {
+	case CollectionKeyed:
+		return "map[string]" + elem
+	case CollectionOrdered:
+		return "[]" + elem
+	default:
+		return f.GoType
+	}
+}
+
 type SectionDefinition struct {
 	Name, GoName, GoType string
 	Documentation        []string

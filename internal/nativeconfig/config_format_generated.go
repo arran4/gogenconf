@@ -160,6 +160,32 @@ func FormatExpr(e Expr) string {
 		return e.Name + "(" + strings.Join(args, ", ") + ")"
 	case *Call:
 		return FormatExpr(*e)
+	case List:
+		items := make([]string, len(e.Items))
+		for i, a := range e.Items {
+			items[i] = FormatExpr(a)
+		}
+		return "[" + strings.Join(items, ", ") + "]"
+	case *List:
+		if e == nil {
+			return "[]"
+		}
+		return FormatExpr(*e)
+	case Map:
+		entries := make([]string, len(e.Entries))
+		for i, en := range e.Entries {
+			keyStr := en.Key
+			if !identifier(keyStr) {
+				keyStr = strconv.Quote(keyStr)
+			}
+			entries[i] = keyStr + ": " + FormatExpr(en.Value)
+		}
+		return "{" + strings.Join(entries, ", ") + "}"
+	case *Map:
+		if e == nil {
+			return "{}"
+		}
+		return FormatExpr(*e)
 	default:
 		return ""
 	}
@@ -170,7 +196,7 @@ func bareLiteral(v string) bool {
 		return false
 	}
 	for _, r := range v {
-		if unicode.IsSpace(r) || r == '(' || r == ')' || r == ',' || r == '"' || r == '\\' {
+		if unicode.IsSpace(r) || r == '(' || r == ')' || r == ',' || r == '"' || r == '\\' || r == '[' || r == ']' || r == '{' || r == '}' {
 			return false
 		}
 	}

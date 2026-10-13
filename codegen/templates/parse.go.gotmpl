@@ -747,6 +747,12 @@ func (p *exprParser) parseExpr(argument bool) (Expr, error) {
 	if p.input[p.pos] == '"' {
 		return p.quoted()
 	}
+	if p.input[p.pos] == '[' {
+		return p.list()
+	}
+	if p.input[p.pos] == '{' {
+		return p.mapExpr()
+	}
 	start := p.pos
 	for p.pos < len(p.input) && isIdent(p.input[p.pos]) {
 		p.pos++
@@ -800,16 +806,119 @@ func (p *exprParser) parseExpr(argument bool) (Expr, error) {
 	valueStart := p.pos
 	for p.pos < len(p.input) {
 		c := p.input[p.pos]
-		if argument && (c == ',' || c == ')') {
+		if argument && (c == ',' || c == ')' || c == ']' || c == '}') {
 			break
 		}
-		if c == '(' || c == ')' || c == '"' {
+		if c == '(' || c == ')' || c == '"' || c == '[' || c == ']' || c == '{' || c == '}' {
 			return nil, fmt.Errorf("quote literal punctuation at byte %d", p.pos)
 		}
 		p.pos++
 	}
 	v := strings.TrimSpace(p.input[valueStart:p.pos])
 	return Literal{Value: v, Span: p.spanAt(valueStart), Origin: OriginAuthored}, nil
+}
+
+func (p *exprParser) list() (Expr, error) {
+	start := p.pos
+	p.pos++ // consume '['
+	p.depth++
+	defer func() { p.depth-- }()
+	var items []Expr
+	for {
+		p.space()
+		if p.pos >= len(p.input) {
+			return nil, fmt.Errorf("unterminated list at byte %d", start)
+		}
+		if p.input[p.pos] == ']' {
+			p.pos++
+			return List{
+				Items:  items,
+				Span:   p.spanAt(start),
+				Origin: OriginAuthored,
+			}, nil
+		}
+		item, err := p.parseExpr(true)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+		p.space()
+		if p.pos < len(p.input) && p.input[p.pos] == ',' {
+			p.pos++
+			p.space()
+		} else if p.pos < len(p.input) && p.input[p.pos] != ']' {
+			return nil, fmt.Errorf("expected ',' or ']' at byte %d", p.pos)
+		}
+	}
+}
+
+func (p *exprParser) mapExpr() (Expr, error) {
+	start := p.pos
+	p.pos++ // consume '{'
+	p.depth++
+	defer func() { p.depth-- }()
+	var entries []MapEntry
+	for {
+		p.space()
+		if p.pos >= len(p.input) {
+			return nil, fmt.Errorf("unterminated map at byte %d", start)
+		}
+		if p.input[p.pos] == '}' {
+			p.pos++
+			return Map{
+				Entries: entries,
+				Span:    p.spanAt(start),
+				Origin:  OriginAuthored,
+			}, nil
+		}
+		keyStart := p.pos
+		var key string
+		var keySpan Span
+		if p.input[p.pos] == '"' {
+			qExpr, err := p.quoted()
+			if err != nil {
+				return nil, err
+			}
+			lit, ok := qExpr.(Literal)
+			if !ok {
+				return nil, fmt.Errorf("invalid map key at byte %d", keyStart)
+			}
+			key = lit.Value
+			keySpan = lit.Span
+		} else {
+			for p.pos < len(p.input) && isIdent(p.input[p.pos]) {
+				p.pos++
+			}
+			if p.pos == keyStart {
+				return nil, fmt.Errorf("expected map key at byte %d", keyStart)
+			}
+			key = p.input[keyStart:p.pos]
+			keySpan = p.spanAt(keyStart)
+		}
+		p.space()
+		if p.pos < len(p.input) && (p.input[p.pos] == ':' || p.input[p.pos] == '=') {
+			p.pos++
+			p.space()
+		}
+		val, err := p.parseExpr(true)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, MapEntry{
+			Key:     key,
+			Value:   val,
+			KeySpan: keySpan,
+			Span:    p.spanAt(keyStart),
+			Origin:  OriginAuthored,
+		})
+		p.space()
+		if p.pos < len(p.input) && p.input[p.pos] == ',' {
+			p.pos++
+			p.space()
+		} else if p.pos < len(p.input) && p.input[p.pos] != '}' {
+			return nil, fmt.Errorf("expected ',' or '}' at byte %d", p.pos)
+		}
+	}
 }
 
 func (p *exprParser) quoted() (Expr, error) {
