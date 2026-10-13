@@ -12,7 +12,7 @@ import (
 	"github.com/arran4/gogenconf/codegen"
 )
 
-const sampleSchema = `config for downloadsd-schema version 1
+const projectSampleSchema = `config for downloadsd-schema version 1
 
 section service
     host string
@@ -27,7 +27,7 @@ end
 `
 
 func TestPlanProjectFromSchemaString(t *testing.T) {
-	schema, err := m.ParseSchemaNamed(strings.NewReader(sampleSchema), "test.conf")
+	schema, err := m.ParseSchemaNamed(strings.NewReader(projectSampleSchema), "test.conf")
 	if err != nil {
 		t.Fatalf("ParseSchemaNamed failed: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestPlanProjectFromSchemaString(t *testing.T) {
 func TestProjectExecuteAtomicAndCheck(t *testing.T) {
 	tmpDir := t.TempDir()
 	schemaFile := filepath.Join(tmpDir, "schema.conf")
-	if err := os.WriteFile(schemaFile, []byte(sampleSchema), 0644); err != nil {
+	if err := os.WriteFile(schemaFile, []byte(projectSampleSchema), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -118,7 +118,7 @@ func TestProjectExecuteAtomicAndCheck(t *testing.T) {
 func TestProjectExecuteCleanMode(t *testing.T) {
 	tmpDir := t.TempDir()
 	schemaFile := filepath.Join(tmpDir, "schema.conf")
-	if err := os.WriteFile(schemaFile, []byte(sampleSchema), 0644); err != nil {
+	if err := os.WriteFile(schemaFile, []byte(projectSampleSchema), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -174,7 +174,7 @@ func TestProjectExecuteCleanMode(t *testing.T) {
 func TestProjectEmitRuntimeAndSample(t *testing.T) {
 	tmpDir := t.TempDir()
 	schemaFile := filepath.Join(tmpDir, "schema.conf")
-	if err := os.WriteFile(schemaFile, []byte(sampleSchema), 0644); err != nil {
+	if err := os.WriteFile(schemaFile, []byte(projectSampleSchema), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -325,4 +325,3 @@ func TestWriteToDirRefusesWritingToSymlink(t *testing.T) {
 		t.Fatalf("unexpected error message: %v", err)
 	}
 }
-
