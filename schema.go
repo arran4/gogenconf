@@ -57,7 +57,10 @@ func CanonicalType(elemType string, kind CollectionKind) string {
 // the generated struct but cannot be configured through the document.
 type Field struct {
 	Key, GoName, GoType string
-	Default             Expr
+	// Parser selects a statically generated, application-supplied custom
+	// expression adapter. Empty retains type-directed conversion.
+	Parser  string
+	Default Expr
 	// Examples are documentation only: never defaults or runtime inputs.
 	Examples                                     []Expr
 	Documentation                                []string

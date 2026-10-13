@@ -140,6 +140,9 @@ func Validate(s m.Schema) error {
 			if !exported(f.GoName) || fields[f.GoName] {
 				return fmt.Errorf("invalid or duplicate field mapping %s.%s", sec.GoName, f.GoName)
 			}
+			if f.Parser != "" && !exported(f.Parser) {
+				return fmt.Errorf("invalid parser mapping %s.%s", sec.Name, f.Key)
+			}
 			fields[f.GoName] = true
 			if !f.RuntimeOnly {
 				if f.Key == "" || keys[f.Key] {

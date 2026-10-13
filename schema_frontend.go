@@ -271,6 +271,10 @@ func parseFieldDefinition(sec *Section) (Field, error) {
 			}
 		case Entry:
 			switch v.Key {
+			case "parser":
+				if lit, ok := v.Value.(Literal); ok {
+					f.Parser = lit.Value
+				}
 			case "go_name":
 				if lit, ok := v.Value.(Literal); ok {
 					f.GoName = lit.Value
@@ -581,6 +585,9 @@ func FormatSchema(identity string, s *Schema) string {
 			fmt.Fprintf(&b, "    section field %s %s\n", f.Key, f.GoType)
 			if f.GoName != "" && f.GoName != exportIdentifier(f.Key) {
 				fmt.Fprintf(&b, "        go_name %s\n", f.GoName)
+			}
+			if f.Parser != "" {
+				fmt.Fprintf(&b, "        parser %s\n", f.Parser)
 			}
 			if f.Default != nil {
 				fmt.Fprintf(&b, "        default %s\n", FormatExpr(f.Default))
