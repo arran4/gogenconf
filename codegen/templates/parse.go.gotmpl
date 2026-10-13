@@ -130,8 +130,23 @@ func ParseNamed(r io.Reader, sourceName string) (*Document, error) {
 			if len(comps) == 0 {
 				// Anonymous object/block '{'
 				comps = []pathComponent{ {name: "", mutation: prefixMut, col: lineCol + braceColOffset} }
-			} else if prefixMut != MutationNone && comps[0].mutation == MutationNone {
-				comps[0].mutation = prefixMut
+			} else {
+				// A compact declaration path names the addressed declaration as a
+				// whole. In `project[~] lxa {}`, the modifier therefore applies to
+				// the leaf (`lxa`), not the intermediate `project` namespace. This
+				// is essential for [=] and [-], which must not replace or remove
+				// sibling named declarations.
+				leaf := len(comps) - 1
+				if prefixMut != MutationNone && comps[leaf].mutation == MutationNone {
+					comps[leaf].mutation = prefixMut
+				}
+				if len(comps) > 1 && comps[0].mutation != MutationNone {
+					if comps[leaf].mutation != MutationNone {
+						return fail(comps[0].col, "multiple mutation modifiers in declaration path")
+					}
+					comps[leaf].mutation = comps[0].mutation
+					comps[0].mutation = MutationNone
+				}
 			}
 			span := Span{
 				Source: sourceName,

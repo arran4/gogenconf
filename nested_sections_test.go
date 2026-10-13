@@ -471,19 +471,23 @@ project[~] lxa {
 		t.Fatalf("failed to parse canonical attached mutation syntax: %v", err)
 	}
 
-	// Verify project section mutation
+	// A compact declaration path targets its leaf. `project[~] lxa` must
+	// mutate lxa, not the project namespace and its sibling declarations.
 	proj := doc.Section("project")
 	if proj == nil {
 		t.Fatal("expected section 'project'")
 	}
-	if proj.Mutation != gogenconf.MutationMutate {
-		t.Fatalf("expected project mutation to be MutationMutate ([~]), got %v", proj.Mutation)
+	if proj.Mutation != gogenconf.MutationNone {
+		t.Fatalf("expected project namespace to remain unmodified, got %v", proj.Mutation)
 	}
 
 	// Verify lxa section inside project
 	lxa := proj.Section("lxa")
 	if lxa == nil {
 		t.Fatal("expected section 'lxa' inside 'project'")
+	}
+	if lxa.Mutation != gogenconf.MutationMutate {
+		t.Fatalf("expected lxa mutation to be MutationMutate ([~]), got %v", lxa.Mutation)
 	}
 
 	// Verify target entry mutation
@@ -537,8 +541,11 @@ project[~] lxa {
 	}
 
 	prefixProj := prefixDoc.Section("project")
-	if prefixProj == nil || prefixProj.Mutation != gogenconf.MutationMutate {
-		t.Fatalf("expected prefix doc project mutation MutationMutate, got %v", prefixProj)
+	if prefixProj == nil || prefixProj.Mutation != gogenconf.MutationNone {
+		t.Fatalf("expected prefix doc project namespace to remain unmodified, got %v", prefixProj)
+	}
+	if prefixLXA := prefixProj.Section("lxa"); prefixLXA == nil || prefixLXA.Mutation != gogenconf.MutationMutate {
+		t.Fatalf("expected prefix doc lxa mutation MutationMutate, got %v", prefixLXA)
 	}
 	prefixTarget, _, _ := prefixDoc.SectionPath("project", "lxa", "build").Entry("target")
 	if prefixTarget.Mutation != gogenconf.MutationReplace {
@@ -555,8 +562,8 @@ project[~] lxa {
 
 	// Verify format canonicalization: prefix notation formats as canonical declaration-attached syntax
 	formattedFromPrefix := gogenconf.Format(prefixDoc)
-	if !strings.Contains(formattedFromPrefix, "project[~] {") {
-		t.Errorf("expected formatted output to contain canonical declaration-attached 'project[~] {', got:\n%s", formattedFromPrefix)
+	if !strings.Contains(formattedFromPrefix, "lxa[~] {") {
+		t.Errorf("expected formatted output to retain leaf mutation, got:\n%s", formattedFromPrefix)
 	}
 	if !strings.Contains(formattedFromPrefix, "target[=] ./cmd/lxa") {
 		t.Errorf("expected formatted output to contain canonical 'target[=] ./cmd/lxa', got:\n%s", formattedFromPrefix)
@@ -571,7 +578,7 @@ project[~] lxa {
 		t.Fatalf("failed to re-parse formatted output: %v", err)
 	}
 	rtProj := docRoundTrip.Section("project")
-	if rtProj == nil || rtProj.Mutation != gogenconf.MutationMutate {
-		t.Fatalf("roundtrip mutation mismatch on project: got %v", rtProj)
+	if rtProj == nil || rtProj.Section("lxa") == nil || rtProj.Section("lxa").Mutation != gogenconf.MutationMutate {
+		t.Fatalf("roundtrip mutation mismatch on lxa: got %v", rtProj)
 	}
 }
