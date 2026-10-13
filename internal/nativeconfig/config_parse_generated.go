@@ -24,7 +24,19 @@ func ParseNamed(r io.Reader, sourceName string) (*Document, error) {
 	d := &Document{}
 	scan := bufio.NewScanner(r)
 	scan.Buffer(make([]byte, 4096), 1024*1024)
-	var section *Section
+	var sectionStack []*Section
+	currentSection := func() *Section {
+		if len(sectionStack) == 0 {
+			return nil
+		}
+		return sectionStack[len(sectionStack)-1]
+	}
+	type blockFrame struct {
+		isBrace bool
+		count   int
+		span    Span
+	}
+	var blockStack []blockFrame
 	// Version metadata may appear after comments. Keep ambiguous spellings
 	// privately until the whole document's ownership convention is known.
 	var legacyComments []struct {
@@ -51,8 +63,8 @@ func ParseNamed(r io.Reader, sourceName string) (*Document, error) {
 		rawLine := scan.Text()
 		line := strings.TrimSpace(rawLine)
 		items := &d.Items
-		if section != nil {
-			items = &section.Items
+		if sec := currentSection(); sec != nil {
+			items = &sec.Items
 		}
 		if line == "" {
 			*items = append(*items, Blank{})
@@ -77,6 +89,126 @@ func ParseNamed(r io.Reader, sourceName string) (*Document, error) {
 			lineOffset += len(rawLine) + 1
 			continue
 		}
+
+		// 1. Closing brace '}'
+		if strings.HasPrefix(line, "}") {
+			rem := strings.TrimSpace(line[1:])
+			if rem != "" && !strings.HasPrefix(rem, "#") {
+				return fail(lineCol+1, "unexpected token after '}'")
+			}
+			if len(blockStack) == 0 {
+				return fail(lineCol, "unexpected '}'")
+			}
+			top := blockStack[len(blockStack)-1]
+			if !top.isBrace {
+				return fail(lineCol, "unexpected '}', expected 'end'")
+			}
+			blockStack = blockStack[:len(blockStack)-1]
+			if top.count > len(sectionStack) {
+				return fail(lineCol, "internal parser error: invalid section stack depth")
+			}
+			sectionStack = sectionStack[:len(sectionStack)-top.count]
+			lineOffset += len(rawLine) + 1
+			continue
+		}
+
+		// 2. Opening brace '{' (named objects, anonymous objects, and compact paths)
+		beforeBrace, hasBrace, emptyBrace, braceColOffset, err := findOpeningBrace(line)
+		if err != nil {
+			return fail(lineCol, err.Error())
+		}
+		if hasBrace {
+			prefixMut := MutationNone
+			if pRem, pKind := splitPrefixMutation(beforeBrace); pKind != MutationNone {
+				prefixMut = pKind
+				beforeBrace = pRem
+			}
+			comps, err := parsePathComponents(beforeBrace, lineCol)
+			if err != nil {
+				return fail(lineCol, err.Error())
+			}
+			if len(comps) == 0 {
+				// Anonymous object/block '{'
+				comps = []pathComponent{{name: "", mutation: prefixMut, col: lineCol + braceColOffset}}
+			} else {
+				// A compact declaration path names the addressed declaration as a
+				// whole. In `project[~] lxa {}`, the modifier therefore applies to
+				// the leaf (`lxa`), not the intermediate `project` namespace. This
+				// is essential for [=] and [-], which must not replace or remove
+				// sibling named declarations.
+				leaf := len(comps) - 1
+				if prefixMut != MutationNone && comps[leaf].mutation == MutationNone {
+					comps[leaf].mutation = prefixMut
+				}
+				if len(comps) > 1 && comps[0].mutation != MutationNone {
+					if comps[leaf].mutation != MutationNone {
+						return fail(comps[0].col, "multiple mutation modifiers in declaration path")
+					}
+					comps[leaf].mutation = comps[0].mutation
+					comps[0].mutation = MutationNone
+				}
+			}
+			span := Span{
+				Source: sourceName,
+				Line:   lineNo,
+				Column: lineCol,
+				Offset: lineOffset + lineCol - 1,
+			}
+			blockStack = append(blockStack, blockFrame{
+				isBrace: true,
+				count:   len(comps),
+				span:    span,
+			})
+			for k, comp := range comps {
+				curr := currentSection()
+				var nextSec *Section
+				// Re-use intermediate section if already present in current container
+				if k < len(comps)-1 {
+					if curr != nil {
+						nextSec = curr.Section(comp.name)
+					} else {
+						nextSec = d.Section(comp.name)
+					}
+				}
+				if nextSec == nil {
+					if (!d.HasVersion || d.Version == 0) && comp.name != "" {
+						if curr != nil && curr.Section(comp.name) != nil {
+							return fail(comp.col, fmt.Sprintf("duplicate section %q", comp.name))
+						}
+						if curr == nil && d.Section(comp.name) != nil {
+							return fail(comp.col, fmt.Sprintf("duplicate section %q", comp.name))
+						}
+					}
+					nextSec = &Section{
+						Name:     comp.name,
+						Mutation: comp.mutation,
+						Brace:    true,
+						Span: Span{
+							Source: sourceName,
+							Line:   lineNo,
+							Column: comp.col,
+							Offset: lineOffset + comp.col - 1,
+						},
+						Origin: OriginAuthored,
+					}
+					if curr != nil {
+						curr.AddSection(nextSec)
+					} else {
+						d.AddSection(nextSec)
+					}
+				} else if comp.mutation != MutationNone {
+					nextSec.Mutation = comp.mutation
+				}
+				sectionStack = append(sectionStack, nextSec)
+			}
+			if emptyBrace {
+				blockStack = blockStack[:len(blockStack)-1]
+				sectionStack = sectionStack[:len(sectionStack)-len(comps)]
+			}
+			lineOffset += len(rawLine) + 1
+			continue
+		}
+
 		key, tail, _ := strings.Cut(line, " ")
 		// Tabs are separators too.
 		for i, c := range line {
@@ -86,10 +218,60 @@ func ParseNamed(r io.Reader, sourceName string) (*Document, error) {
 				break
 			}
 		}
+		entryMutation := MutationNone
+		if strings.HasPrefix(line, "[+]") || strings.HasPrefix(line, "[=]") || strings.HasPrefix(line, "[~]") || strings.HasPrefix(line, "[-]") {
+			// Accepted alternative prefix syntax: `[=] target ./cmd/lxa`
+			switch line[:3] {
+			case "[+]":
+				entryMutation = MutationAdd
+			case "[=]":
+				entryMutation = MutationReplace
+			case "[~]":
+				entryMutation = MutationMutate
+			case "[-]":
+				entryMutation = MutationDelete
+			}
+			rest := strings.TrimSpace(line[3:])
+			key = rest
+			tail = ""
+			for i, c := range rest {
+				if c == ' ' || c == '\t' {
+					key = rest[:i]
+					tail = strings.TrimSpace(rest[i:])
+					break
+				}
+			}
+		} else {
+			// Canonical declaration-attached syntax: `target[=] ./cmd/lxa` or `deprecated_field[-]`
+			base, mut, hasMut := splitMutation(key)
+			if hasMut {
+				key = base
+				entryMutation = mut
+			} else if strings.HasPrefix(tail, "[+]") || strings.HasPrefix(tail, "[=]") || strings.HasPrefix(tail, "[~]") || strings.HasPrefix(tail, "[-]") {
+				// Accepted alternative infix operator: `target [=] ./cmd/lxa`
+				switch tail[:3] {
+				case "[+]":
+					entryMutation = MutationAdd
+				case "[=]":
+					entryMutation = MutationReplace
+				case "[~]":
+					entryMutation = MutationMutate
+				case "[-]":
+					entryMutation = MutationDelete
+				}
+				tail = strings.TrimSpace(tail[3:])
+			}
+		}
 		keyCol := lineCol
+		if entryMutation != MutationNone && (strings.HasPrefix(line, "[+]") || strings.HasPrefix(line, "[=]") || strings.HasPrefix(line, "[~]") || strings.HasPrefix(line, "[-]")) {
+			idx := strings.Index(line[3:], key)
+			if idx >= 0 {
+				keyCol = lineCol + 3 + idx
+			}
+		}
 		switch key {
 		case "config":
-			if section != nil || d.HasVersion {
+			if currentSection() != nil || d.HasVersion {
 				return fail(keyCol, "config header must occur once at root")
 			}
 			fields := strings.Fields(tail)
@@ -120,7 +302,7 @@ func ParseNamed(r io.Reader, sourceName string) (*Document, error) {
 				Span:     headerSpan,
 			})
 		case "config_version":
-			if section != nil || d.HasVersion {
+			if currentSection() != nil || d.HasVersion {
 				return fail(keyCol, "config_version must occur once at root")
 			}
 			v, err := strconv.Atoi(tail)
@@ -138,14 +320,34 @@ func ParseNamed(r io.Reader, sourceName string) (*Document, error) {
 			d.HeaderSpan = headerSpan
 			d.Items = append(d.Items, Version{})
 		case "section":
-			if section != nil || tail == "" {
-				return fail(keyCol, "expected a named, non-nested section")
+			if tail == "" {
+				return fail(keyCol, "expected a named section")
 			}
-			if d.Section(tail) != nil {
-				return fail(keyCol, "duplicate section")
+			secName := tail
+			secMut := entryMutation
+			if secMut == MutationNone {
+				base, m, hasM := splitMutation(secName)
+				if hasM {
+					secName = base
+					secMut = m
+				}
 			}
-			section = &Section{
-				Name: tail,
+			if !d.HasVersion || d.Version == 0 {
+				curr := currentSection()
+				if curr != nil {
+					if curr.Section(secName) != nil {
+						return fail(keyCol, fmt.Sprintf("duplicate section %q", secName))
+					}
+				} else {
+					if d.Section(secName) != nil {
+						return fail(keyCol, fmt.Sprintf("duplicate section %q", secName))
+					}
+				}
+			}
+			newSec := &Section{
+				Name:     secName,
+				Mutation: secMut,
+				Brace:    false,
 				Span: Span{
 					Source: sourceName,
 					Line:   lineNo,
@@ -154,25 +356,52 @@ func ParseNamed(r io.Reader, sourceName string) (*Document, error) {
 				},
 				Origin: OriginAuthored,
 			}
-			d.AddSection(section)
+			curr := currentSection()
+			if curr != nil {
+				curr.AddSection(newSec)
+			} else {
+				d.AddSection(newSec)
+			}
+			sectionStack = append(sectionStack, newSec)
+			blockStack = append(blockStack, blockFrame{
+				isBrace: false,
+				count:   1,
+				span: Span{
+					Source: sourceName,
+					Line:   lineNo,
+					Column: keyCol,
+					Offset: lineOffset + keyCol - 1,
+				},
+			})
 		case "end":
-			if section == nil || tail != "" {
+			if tail != "" {
+				return fail(keyCol, "unexpected tokens after end")
+			}
+			if len(blockStack) == 0 {
 				return fail(keyCol, "unexpected end")
 			}
-			section = nil
+			top := blockStack[len(blockStack)-1]
+			if top.isBrace {
+				return fail(keyCol, "unexpected 'end', expected '}'")
+			}
+			blockStack = blockStack[:len(blockStack)-1]
+			sectionStack = sectionStack[:len(sectionStack)-1]
 		default:
 			if !identifier(key) {
 				return fail(keyCol, "invalid field name")
 			}
-			if section != nil {
-				if _, _, ok := section.Entry(key); ok {
-					return fail(keyCol, "duplicate field")
-				}
-			} else {
-				if _, _, ok := d.Entry(key); ok {
-					return fail(keyCol, "duplicate field")
+			if !d.HasVersion || d.Version == 0 {
+				if sec := currentSection(); sec != nil {
+					if _, _, ok := sec.Entry(key); ok {
+						return fail(keyCol, "duplicate field")
+					}
+				} else {
+					if _, _, ok := d.Entry(key); ok {
+						return fail(keyCol, "duplicate field")
+					}
 				}
 			}
+			// Note: Duplicate authored entries are preserved in unresolved AST per contract.
 			tailCol := keyCol + len(key)
 			if tail != "" {
 				tailIdx := strings.Index(rawLine[keyCol+len(key)-1:], tail)
@@ -180,23 +409,25 @@ func ParseNamed(r io.Reader, sourceName string) (*Document, error) {
 					tailCol = keyCol + len(key) + tailIdx
 				}
 			}
-			e, err := ParseExprWithSpan(tail, Span{
-				Source: sourceName,
-				Line:   lineNo,
-				Column: tailCol,
-				Offset: lineOffset + tailCol - 1,
-			})
-			if err != nil {
-				return fail(tailCol, "invalid expression: "+err.Error())
+			var e Expr
+			if tail != "" {
+				var err error
+				e, err = ParseExprWithSpan(tail, Span{
+					Source: sourceName,
+					Line:   lineNo,
+					Column: tailCol,
+					Offset: lineOffset + tailCol - 1,
+				})
+				if err != nil {
+					return fail(tailCol, "invalid expression: "+err.Error())
+				}
 			}
 			// A legacy value-less entry is retained but is not an override.
 			// Explicit empty strings use "".
-			if tail == "" {
-				e = nil
-			}
 			*items = append(*items, Entry{
-				Key:   key,
-				Value: e,
+				Key:      key,
+				Mutation: entryMutation,
+				Value:    e,
 				Span: Span{
 					Source: sourceName,
 					Line:   lineNo,
@@ -211,8 +442,12 @@ func ParseNamed(r io.Reader, sourceName string) (*Document, error) {
 	if err := scan.Err(); err != nil {
 		return nil, err
 	}
-	if section != nil {
-		return fail(1, "unterminated section")
+	if len(blockStack) > 0 {
+		top := blockStack[len(blockStack)-1]
+		if top.isBrace {
+			return fail(top.span.Column, "unterminated block, missing '}'")
+		}
+		return fail(top.span.Column, "unterminated section, missing 'end'")
 	}
 	if !d.HasVersion || d.Version == 0 {
 		for _, c := range legacyComments {
@@ -220,6 +455,182 @@ func ParseNamed(r io.Reader, sourceName string) (*Document, error) {
 		}
 	}
 	return d, nil
+}
+
+func findOpeningBrace(line string) (string, bool, bool, int, error) {
+	n := len(line)
+	inQuote := false
+	escaped := false
+	for i := 0; i < n; i++ {
+		c := line[i]
+		if inQuote {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if c == '\\' {
+				escaped = true
+				continue
+			}
+			if c == '"' {
+				inQuote = false
+			}
+			continue
+		}
+		if c == '"' {
+			inQuote = true
+			continue
+		}
+		if c == '#' {
+			// Rest of line is comment
+			break
+		}
+		if c == '{' {
+			rem := strings.TrimSpace(line[i+1:])
+			if rem == "" || strings.HasPrefix(rem, "#") {
+				return strings.TrimSpace(line[:i]), true, false, i, nil
+			}
+			if rem == "}" {
+				return strings.TrimSpace(line[:i]), true, true, i, nil
+			}
+		}
+	}
+	if inQuote {
+		return "", false, false, 0, errors.New("unterminated quote")
+	}
+	return "", false, false, 0, nil
+}
+
+type pathComponent struct {
+	name     string
+	mutation MutationKind
+	col      int
+	quoted   bool
+}
+
+func splitMutation(s string) (string, MutationKind, bool) {
+	for _, op := range []struct {
+		str  string
+		kind MutationKind
+	}{
+		{"[+]", MutationAdd},
+		{"[=]", MutationReplace},
+		{"[~]", MutationMutate},
+		{"[-]", MutationDelete},
+	} {
+		if strings.HasSuffix(s, op.str) {
+			return s[:len(s)-len(op.str)], op.kind, true
+		}
+	}
+	return s, MutationNone, false
+}
+
+func splitPrefixMutation(s string) (string, MutationKind) {
+	trimmed := strings.TrimLeft(s, " \t")
+	for _, op := range []struct {
+		str  string
+		kind MutationKind
+	}{
+		{"[+]", MutationAdd},
+		{"[=]", MutationReplace},
+		{"[~]", MutationMutate},
+		{"[-]", MutationDelete},
+	} {
+		if strings.HasPrefix(trimmed, op.str) {
+			rem := strings.TrimLeft(trimmed[len(op.str):], " \t")
+			return rem, op.kind
+		}
+	}
+	return s, MutationNone
+}
+
+func parsePathComponents(s string, startCol int) ([]pathComponent, error) {
+	var comps []pathComponent
+	i := 0
+	n := len(s)
+	for i < n {
+		for i < n && (s[i] == ' ' || s[i] == '\t') {
+			i++
+		}
+		if i >= n {
+			break
+		}
+		col := startCol + i
+		if s[i] == '"' {
+			start := i
+			i++
+			escaped := false
+			closed := false
+			for i < n {
+				if escaped {
+					escaped = false
+					i++
+					continue
+				}
+				if s[i] == '\\' {
+					escaped = true
+					i++
+					continue
+				}
+				if s[i] == '"' {
+					closed = true
+					i++
+					break
+				}
+				i++
+			}
+			if !closed {
+				return nil, fmt.Errorf("unterminated quoted path component at column %d", col)
+			}
+			raw := s[start:i]
+			unquoted, err := strconv.Unquote(raw)
+			if err != nil {
+				return nil, fmt.Errorf("invalid quoted path component at column %d: %w", col, err)
+			}
+			var mut MutationKind
+			if i+3 <= n {
+				if _, m, ok := splitMutation(s[i : i+3]); ok {
+					mut = m
+					i += 3
+				}
+			}
+			comps = append(comps, pathComponent{name: unquoted, mutation: mut, col: col, quoted: true})
+		} else {
+			start := i
+			for i < n && s[i] != ' ' && s[i] != '\t' && s[i] != '{' {
+				i++
+			}
+			raw := s[start:i]
+			base, mut, hasMut := splitMutation(raw)
+			if hasMut {
+				if base == "" {
+					return nil, fmt.Errorf("invalid path component %q at column %d", raw, col)
+				}
+				if !validPathComponent(base) {
+					return nil, fmt.Errorf("invalid path component %q at column %d", base, col)
+				}
+				comps = append(comps, pathComponent{name: base, mutation: mut, col: col, quoted: false})
+			} else {
+				if !validPathComponent(raw) {
+					return nil, fmt.Errorf("invalid path component %q at column %d", raw, col)
+				}
+				comps = append(comps, pathComponent{name: raw, mutation: MutationNone, col: col, quoted: false})
+			}
+		}
+	}
+	return comps, nil
+}
+
+func validPathComponent(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, c := range []byte(s) {
+		if !(c == '_' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || i > 0 && (c >= '0' && c <= '9' || c == '-' || c == '.' || c == '/')) {
+			return false
+		}
+	}
+	return true
 }
 
 func identifier(s string) bool {

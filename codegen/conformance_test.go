@@ -357,3 +357,67 @@ func TestConformanceCloneExpr(t *testing.T) {
 		t.Fatal("CloneExpr(nil) != nil")
 	}
 }
+
+func TestConformanceMutationSyntax(t *testing.T) {
+	inputs := []string{
+		`config for lxa version 1
+
+project[~] lxa {
+    build {
+        target[=] ./cmd/lxa
+    }
+    arch[+] "riscv64"
+    deprecated[-]
+}
+`,
+		`config for lxa version 1
+
+[~] project lxa {
+    build {
+        [=] target ./cmd/lxa
+    }
+    [+] arch "riscv64"
+    [-] deprecated
+}
+`,
+		`config_version 1
+
+server[=] {
+    host[~] localhost
+    port[+] 8080
+    legacy[-]
+}
+`,
+	}
+
+	for i, input := range inputs {
+		canonDoc, err := gogenconf.ParseNamed(strings.NewReader(input), "canon.conf")
+		if err != nil {
+			t.Fatalf("case %d: canonical parse failed: %v", i, err)
+		}
+		genDoc, err := rf.ParseNamed(strings.NewReader(input), "gen.conf")
+		if err != nil {
+			t.Fatalf("case %d: generated runtime parse failed: %v", i, err)
+		}
+
+		canonOut := gogenconf.Format(canonDoc)
+		genOut := rf.Format(genDoc)
+		if canonOut != genOut {
+			t.Fatalf("case %d: formatted output divergence:\ncanon:\n%s\ngen:\n%s", i, canonOut, genOut)
+		}
+
+		// Re-parse formatted outputs
+		canonRT, err := gogenconf.ParseNamed(strings.NewReader(canonOut), "canon_rt.conf")
+		if err != nil {
+			t.Fatalf("case %d: canon re-parse failed: %v", i, err)
+		}
+		genRT, err := rf.ParseNamed(strings.NewReader(genOut), "gen_rt.conf")
+		if err != nil {
+			t.Fatalf("case %d: gen re-parse failed: %v", i, err)
+		}
+
+		if gogenconf.Format(canonRT) != rf.Format(genRT) {
+			t.Fatalf("case %d: roundtrip formatted output divergence", i)
+		}
+	}
+}

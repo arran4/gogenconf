@@ -192,17 +192,24 @@ end
 	}
 }
 
-func TestDuplicateRootFieldsRejected(t *testing.T) {
+func TestDuplicateRootFieldsPreservedInAST(t *testing.T) {
 	input := `config for testapp version 1
 timeout 30s
 timeout 60s
 `
-	_, err := gogenconf.Parse(strings.NewReader(input))
-	if err == nil {
-		t.Fatalf("expected error for duplicate root field, got nil")
+	doc, err := gogenconf.Parse(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("unexpected error parsing duplicate root fields: %v", err)
 	}
-	if !strings.Contains(err.Error(), "duplicate field") {
-		t.Errorf("expected 'duplicate field' error, got: %v", err)
+	entries := doc.Entries("timeout")
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 duplicate entries preserved in AST, got %d", len(entries))
+	}
+	if lit, ok := entries[0].Value.(gogenconf.Literal); !ok || lit.Value != "30s" {
+		t.Errorf("entry 0 mismatch: %v", entries[0].Value)
+	}
+	if lit, ok := entries[1].Value.(gogenconf.Literal); !ok || lit.Value != "60s" {
+		t.Errorf("entry 1 mismatch: %v", entries[1].Value)
 	}
 }
 

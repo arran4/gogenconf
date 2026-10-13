@@ -132,11 +132,38 @@ type Blank struct{}
 
 func (Blank) item() {}
 
+// MutationKind indicates an explicit layer mutation modifier attached to a declaration.
+type MutationKind uint8
+
+const (
+	MutationNone    MutationKind = iota
+	MutationAdd                  // [+] add / append / insert
+	MutationReplace              // [=] replace / overwrite
+	MutationMutate               // [~] mutate / inherit / deep-merge (not prepend)
+	MutationDelete               // [-] delete / remove
+)
+
+func (m MutationKind) String() string {
+	switch m {
+	case MutationAdd:
+		return "[+]"
+	case MutationReplace:
+		return "[=]"
+	case MutationMutate:
+		return "[~]"
+	case MutationDelete:
+		return "[-]"
+	default:
+		return ""
+	}
+}
+
 type Entry struct {
-	Key    string
-	Value  Expr
-	Span   Span
-	Origin Origin
+	Key      string
+	Mutation MutationKind
+	Value    Expr
+	Span     Span
+	Origin   Origin
 	// Defaulted is transient provenance for runtime precedence, never serialized.
 	Defaulted bool
 }
@@ -148,13 +175,98 @@ type Raw struct{ Text string }
 func (Raw) item() {}
 
 type Section struct {
-	Name   string
-	Span   Span
-	Origin Origin
-	Items  []Item
+	Name     string
+	Mutation MutationKind
+	Brace    bool
+	Span     Span
+	Origin   Origin
+	Items    []Item
+	Sections []*Section
 }
 
 func (*Section) item() {}
+
+func (s *Section) Entries(key string) []Entry {
+	if s == nil {
+		return nil
+	}
+	var res []Entry
+	for _, item := range s.Items {
+		if e, ok := item.(Entry); ok && e.Key == key {
+			res = append(res, e)
+		}
+	}
+	return res
+}
+
+func (s *Section) SectionsNamed(name string) []*Section {
+	if s == nil {
+		return nil
+	}
+	var res []*Section
+	for _, sub := range s.Sections {
+		if sub.Name == name {
+			res = append(res, sub)
+		}
+	}
+	return res
+}
+
+func (s *Section) Section(name string) *Section {
+	if s == nil {
+		return nil
+	}
+	for _, sub := range s.Sections {
+		if sub.Name == name {
+			return sub
+		}
+	}
+	return nil
+}
+
+func (s *Section) AddSection(sub *Section) {
+	if s == nil {
+		return
+	}
+	seen := map[*Section]bool{}
+	for _, item := range s.Items {
+		if sec, ok := item.(*Section); ok {
+			seen[sec] = true
+		}
+	}
+	for _, sec := range s.Sections {
+		if !seen[sec] {
+			s.Items = append(s.Items, sec)
+		}
+	}
+	s.Sections = append(s.Sections, sub)
+	s.Items = append(s.Items, sub)
+}
+
+func (s *Section) Value(key string) Expr {
+	if s == nil {
+		return nil
+	}
+	e, _, ok := s.Entry(key)
+	if !ok {
+		return nil
+	}
+	return e.Value
+}
+
+func (s *Section) SectionPath(path ...string) *Section {
+	if s == nil || len(path) == 0 {
+		return nil
+	}
+	curr := s.Section(path[0])
+	for _, name := range path[1:] {
+		if curr == nil {
+			return nil
+		}
+		curr = curr.Section(name)
+	}
+	return curr
+}
 
 type Version struct{}
 
@@ -197,6 +309,32 @@ func (d *Document) Entry(key string) (Entry, int, bool) {
 		}
 	}
 	return Entry{}, -1, false
+}
+
+func (d *Document) Entries(key string) []Entry {
+	if d == nil {
+		return nil
+	}
+	var res []Entry
+	for _, item := range d.Items {
+		if e, ok := item.(Entry); ok && e.Key == key {
+			res = append(res, e)
+		}
+	}
+	return res
+}
+
+func (d *Document) SectionsNamed(name string) []*Section {
+	if d == nil {
+		return nil
+	}
+	var res []*Section
+	for _, s := range d.Sections {
+		if s.Name == name {
+			res = append(res, s)
+		}
+	}
+	return res
 }
 
 func (s *Section) Entry(key string) (Entry, int, bool) {
@@ -295,6 +433,34 @@ func (d *Document) CheckCompatibility(expectedIdentity string, maxVersion int) e
 	return nil
 }
 
+func (d *Document) SectionPath(path ...string) *Section {
+	if d == nil || len(path) == 0 {
+		return nil
+	}
+	curr := d.Section(path[0])
+	for _, name := range path[1:] {
+		if curr == nil {
+			return nil
+		}
+		curr = curr.Section(name)
+	}
+	return curr
+}
+
+func (d *Document) PathValue(path ...string) Expr {
+	if d == nil || len(path) == 0 {
+		return nil
+	}
+	if len(path) == 1 {
+		return d.Value("", path[0])
+	}
+	sec := d.SectionPath(path[:len(path)-1]...)
+	if sec == nil {
+		return nil
+	}
+	return sec.Value(path[len(path)-1])
+}
+
 // Clone owns all slices and expression nodes, so migrations and providers do
 // not share mutable declarations with the editing document.
 func (d *Document) Clone() *Document {
@@ -305,29 +471,83 @@ func (d *Document) Clone() *Document {
 		HeaderSpan: d.HeaderSpan,
 	}
 	sections := map[*Section]*Section{}
-	cloneItems := func(items []Item) []Item {
+	var cloneSection func(s *Section) *Section
+	var cloneItems func(items []Item) []Item
+
+	cloneItems = func(items []Item) []Item {
 		result := make([]Item, 0, len(items))
 		for _, item := range items {
-			if e, ok := item.(Entry); ok {
-				e.Value = CloneExpr(e.Value)
-				item = e
+			switch v := item.(type) {
+			case Entry:
+				v.Value = CloneExpr(v.Value)
+				result = append(result, v)
+			case *Section:
+				c := cloneSection(v)
+				result = append(result, c)
+			default:
+				result = append(result, item)
 			}
-			result = append(result, item)
 		}
 		return result
 	}
-	for _, s := range d.Sections {
-		c := &Section{Name: s.Name, Span: s.Span, Origin: s.Origin, Items: cloneItems(s.Items)}
+
+	cloneSection = func(s *Section) *Section {
+		if s == nil {
+			return nil
+		}
+		if c, ok := sections[s]; ok {
+			return c
+		}
+		c := &Section{
+			Name:     s.Name,
+			Mutation: s.Mutation,
+			Brace:    s.Brace,
+			Span:     s.Span,
+			Origin:   s.Origin,
+		}
 		sections[s] = c
-		out.Sections = append(out.Sections, c)
+		c.Items = cloneItems(s.Items)
+		for _, sub := range s.Sections {
+			c.Sections = append(c.Sections, cloneSection(sub))
+		}
+		return c
+	}
+
+	for _, s := range d.Sections {
+		out.Sections = append(out.Sections, cloneSection(s))
 	}
 	out.Items = cloneItems(d.Items)
-	for i, item := range out.Items {
-		if s, ok := item.(*Section); ok {
-			out.Items[i] = sections[s]
+	return out
+}
+
+// Clone returns a deep copy of the section.
+func (s *Section) Clone() *Section {
+	if s == nil {
+		return nil
+	}
+	c := &Section{
+		Name:     s.Name,
+		Mutation: s.Mutation,
+		Brace:    s.Brace,
+		Span:     s.Span,
+		Origin:   s.Origin,
+	}
+	c.Items = make([]Item, 0, len(s.Items))
+	for _, item := range s.Items {
+		switch v := item.(type) {
+		case Entry:
+			v.Value = CloneExpr(v.Value)
+			c.Items = append(c.Items, v)
+		case *Section:
+			c.Items = append(c.Items, v.Clone())
+		default:
+			c.Items = append(c.Items, item)
 		}
 	}
-	return out
+	for _, sub := range s.Sections {
+		c.Sections = append(c.Sections, sub.Clone())
+	}
+	return c
 }
 
 func (s *Section) Set(key string, value Expr) {
