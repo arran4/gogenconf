@@ -127,12 +127,6 @@ func NewRoot(name, version, commit, date string) (*RootCmd, error) {
 	}
 
 	{
-		subCmd := NewLazyCommand(func() Cmd { return c.NewTemplate() })
-		c.Commands["template"] = subCmd
-
-	}
-
-	{
 		subCmd := NewLazyCommand(func() Cmd { return c.NewGenerate() })
 		c.Commands["generate"] = subCmd
 
@@ -153,6 +147,12 @@ func NewRoot(name, version, commit, date string) (*RootCmd, error) {
 	{
 		subCmd := NewLazyCommand(func() Cmd { return c.NewSchema() })
 		c.Commands["schema"] = subCmd
+
+	}
+
+	{
+		subCmd := NewLazyCommand(func() Cmd { return c.NewTemplate() })
+		c.Commands["template"] = subCmd
 
 	}
 
