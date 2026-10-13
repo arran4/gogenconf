@@ -249,6 +249,28 @@ This emits:
 
 The generated code depends solely on the Go standard library (`bufio`, `fmt`, `io`, `strconv`, `strings`, `unicode`). It contains no imports of, aliases to, or runtime forwarding back to `github.com/arran4/gogenconf`.
 
+#### Schema-specialized application configuration API (#9)
+
+Applications can generate a complete, coherent configuration package using `codegen.GenerateAppAPI`:
+
+```go
+apiCode, err := codegen.GenerateAppAPI(schema.Definition(), codegen.Options{
+    Package:       "appconfig",
+    RuntimeImport: "myproject/internal/myconfig",
+})
+```
+
+This delivers a full application lifecycle API with zero runtime dependency on `gogenconf`:
+- **Typed Loading**: `appconfig.Load(ctx, doc, opts...)`, `appconfig.LoadFile(ctx, path, opts...)`, `appconfig.LoadReader(ctx, r, opts...)`, and `appconfig.LoadBytes(ctx, b, opts...)`.
+- **Options**: `WithRegistry(r)`, `WithLookupEnv(fn)`, `WithMigrations(m)`, `WithStrict(bool)`, and `WithSkipEnrich(bool)`.
+- **Strict vs Forward-Compatible Validation**: `appconfig.Validate(doc, strict)` enforces version and required fields; with `strict: true`, unknown sections or fields are rejected before binding, while non-strict mode preserves unknown content for forward compatibility.
+- **Persistence**: `appconfig.Save(w, doc)` and `appconfig.SaveFile(path, doc)` format and write unresolved documents.
+- **Safe Inspection**: `appconfig.Inspect(doc)` and `appconfig.InspectString(doc)` automatically redact sensitive fields to `[REDACTED]` for safe logging without diagnostic leakage.
+- **Transactional Migrations**: `appconfig.NewMigrations()` supports sequential `migrations.Register(fromVersion, fn)` dispatch before enrichment and binding.
+- **Schema Metadata**: `appconfig.SchemaVersion`, `appconfig.Field(section, key)`, `appconfig.IsSensitive`, `appconfig.IsRequired`, `appconfig.IsInputOnly`, and `appconfig.IsWritable`.
+
+See the complete runnable example at [examples/generated/appconfig](examples/generated/appconfig/main.go).
+
 #### Production dogfooding
 
 The shipped `gogenconf` syntax CLI now generates and checks in `internal/nativeconfig` through the repository-local `internal/runtimegen` driver. `format`, `validate`, `expr format`, and `expr validate` use that generated runtime in production. The root `gogenconf` parser and formatter remain the canonical public implementation and the differential-conformance oracle; they are not a normal fallback for the CLI syntax path. This demonstrates the dependency-free native parsing boundary from #5, while complete generated-binder dependency removal remains #6 and generator/product parity follow-up remains #12/#19.
