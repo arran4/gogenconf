@@ -133,6 +133,36 @@ func expressionWithPkg(e m.Expr, pkg string) (string, error) {
 		return pkg + ".Call{Name:" + strconv.Quote(v.Name) + ",Args:[]" + pkg + ".Expr{" + strings.Join(args, ",") + "}}", nil
 	case *m.Call:
 		return expressionWithPkg(*v, pkg)
+	case m.List:
+		items := []string{}
+		for _, it := range v.Items {
+			r, err := expressionWithPkg(it, pkg)
+			if err != nil {
+				return "", err
+			}
+			items = append(items, r)
+		}
+		return pkg + ".List{Items:[]" + pkg + ".Expr{" + strings.Join(items, ",") + "}}", nil
+	case *m.List:
+		if v == nil {
+			return "nil", nil
+		}
+		return expressionWithPkg(*v, pkg)
+	case m.Map:
+		entries := []string{}
+		for _, en := range v.Entries {
+			r, err := expressionWithPkg(en.Value, pkg)
+			if err != nil {
+				return "", err
+			}
+			entries = append(entries, pkg+".MapEntry{Key:"+strconv.Quote(en.Key)+",Value:"+r+"}")
+		}
+		return pkg + ".Map{Entries:[]" + pkg + ".MapEntry{" + strings.Join(entries, ",") + "}}", nil
+	case *m.Map:
+		if v == nil {
+			return "nil", nil
+		}
+		return expressionWithPkg(*v, pkg)
 	default:
 		return "", fmt.Errorf("unsupported default expression")
 	}
