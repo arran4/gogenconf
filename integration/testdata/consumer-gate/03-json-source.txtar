@@ -1,0 +1,50 @@
+Case: from_json_file expression resolution
+
+-- options.json --
+{"scenario":"json-source"}
+
+-- schema.json --
+{
+  "version": 1,
+  "sections": [
+    {
+      "name": "db",
+      "go_name": "DB",
+      "go_type": "DBConfig",
+      "fields": [
+        {"key": "password", "go_name": "Password", "go_type": "string", "required": true}
+      ]
+    }
+  ]
+}
+
+-- input/db.json --
+{"credentials":{"password":"db-secret-password-xyz"}}
+
+-- input/config.conf --
+config_version 1
+
+section db
+    password from_json_file("db.json", ".credentials.password")
+end
+
+-- input/main.go --
+package main
+
+import (
+	"context"
+	"fmt"
+	"consumer.test/app/appconfig"
+)
+
+func main() {
+	ctx := context.Background()
+	cfg, _, err := appconfig.LoadFile(ctx, "config.conf")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("db password: %s\n", cfg.DB.Password)
+}
+
+-- expected/stdout.txt --
+db password: db-secret-password-xyz

@@ -1,0 +1,54 @@
+Case: repeated named sections binding
+
+-- options.json --
+{"scenario":"repeated-sections"}
+
+-- schema.json --
+{
+  "version": 1,
+  "sections": [
+    {
+      "name": "worker",
+      "go_name": "Workers",
+      "go_type": "WorkerConfig",
+      "repeated": true,
+      "fields": [
+        {"key": "concurrency", "go_name": "Concurrency", "go_type": "int", "default": "1"}
+      ]
+    }
+  ]
+}
+
+-- input/config.conf --
+config_version 1
+
+section worker worker-alpha
+    concurrency 4
+end
+
+section worker worker-beta
+    concurrency 8
+end
+
+-- input/main.go --
+package main
+
+import (
+	"context"
+	"fmt"
+	"consumer.test/app/appconfig"
+)
+
+func main() {
+	ctx := context.Background()
+	cfg, _, err := appconfig.LoadFile(ctx, "config.conf")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("workers: %s=%d, %s=%d\n",
+		cfg.Workers[0].Name, cfg.Workers[0].Concurrency,
+		cfg.Workers[1].Name, cfg.Workers[1].Concurrency)
+}
+
+-- expected/stdout.txt --
+workers: worker-alpha=4, worker-beta=8

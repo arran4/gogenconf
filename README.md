@@ -317,18 +317,34 @@ Applications can opt fields, sections, or root configurations into stage behavio
 
 When a field is marked `Sensitive: true` in the schema, validation or conversion errors are fail-closed and automatically redacted to avoid disclosing confidential credentials or keys in logs and diagnostics.
 
+##### Isolated consumer verification gate (#10)
+
+The CI test suite runs an exhaustive consumer gate (`TestConsumerGate` in `integration/consumer_gate_test.go`) across reviewable txtar scenarios (`integration/testdata/consumer-gate/*.txtar`). For every scenario, the gate materializes a clean, independent consumer module with no `go.mod` dependencies on `github.com/arran4/gogenconf`, builds and runs the application, asserts exact expected outputs, and statically proves with `go list -deps ./...` that `gogenconf` does not appear anywhere in the runtime dependency graph.
+
+The gate scenarios cover:
+1. `literal-default`: Literal and default-only scalar configuration binding (`string`, `int`, `bool`, `time.Duration`).
+2. `nested-sources`: Dynamic nested resolution (`from_file(from_env("KEY_PATH"))`).
+3. `json-source`: JSON file expression resolution (`from_json_file("db.json", ".credentials.password")`).
+4. `repeated-sections`: Repeated named sections mapped to typed slice elements (`[]WorkerConfig`).
+5. `sensitive-fields`: Sensitive fields with automated redaction in inspection and diagnostic error messages.
+6. `input-runtime-only`: Acceptance of migration `InputOnly` fields and unpersisted `RuntimeOnly` fields.
+7. `provider-backed`: Lazy, deferred resolution via `Provider[T]`.
+8. `custom-hooks-and-types`: Custom types implementing `ConfigSanitizer`, `ConfigValidator`, and `ConfigDecoder`.
+9. `unsupported-schema`: Fail-early generation errors for unsupported types before any output is emitted.
+
 #### Production dogfooding
 
 The shipped `gogenconf` syntax CLI now generates and checks in `internal/nativeconfig` through the repository-local `internal/runtimegen` driver. `format`, `validate`, `expr format`, and `expr validate` use that generated runtime in production. The root `gogenconf` parser and formatter remain the canonical public implementation and the differential-conformance oracle; they are not a normal fallback for the CLI syntax path. This demonstrates the dependency-free native parsing boundary from #5, while complete generated-binder dependency removal remains #6 and generator/product parity follow-up remains #12/#19.
 
 #### Roadmap to build-time-only generation (#4)
 
-- **#5**: Generate an application-owned native config runtime instead of importing gogenconf; the project CLI dogfoods it for syntax tooling.
-- **#6**: Generate static resolver and declarer code for dependency-free binders.
-- **#7**: Generate application-owned provider support and emit only schema-required runtime features.
-- **#8**: Add a first-class `gogenconf generate` command and canonical project generation contract.
-- **#9**: Generate a schema-specialized application config API.
-- **#10**: Isolated consumer gate proving no gogenconf runtime dependency.
+- **#5**: Generate an application-owned native config runtime instead of importing gogenconf (completed in PR #11).
+- **#6**: Generate static resolver and declarer code for dependency-free binders (completed in PR #30).
+- **#7**: Generate application-owned provider support and emit only schema-required runtime features (completed in PR #30).
+- **#9**: Generate a schema-specialized application config API (completed in PR #32).
+- **#15**: Rich Go type mappings and lifecycle hooks without reflection (completed in PR #33).
+- **#10**: Isolated consumer gate proving no gogenconf runtime dependency (completed in PR #34).
+- **#8**: First-class `gogenconf generate` command and canonical project generation contract (Lane C).
 
 ## Defaults, examples, comments, and evolution
 

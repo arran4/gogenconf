@@ -1,0 +1,113 @@
+Case: Address-shaped versioned configuration with migrations, AES secrets redaction, and provider-backed keys
+
+-- options.json --
+{"scenario":"address-shaped"}
+
+-- schema.json --
+{
+  "version": 2,
+  "sections": [
+    {
+      "name": "server",
+      "go_name": "Server",
+      "go_type": "ServerConfig",
+      "fields": [
+        {"key": "listen", "go_name": "Listen", "go_type": "string", "default": "0.0.0.0:8080"}
+      ]
+    },
+    {
+      "name": "database",
+      "go_name": "Database",
+      "go_type": "DatabaseConfig",
+      "fields": [
+        {"key": "dsn", "go_name": "DSN", "go_type": "string", "required": true},
+        {"key": "max_connections", "go_name": "MaxConnections", "go_type": "int", "default": "25"}
+      ]
+    },
+    {
+      "name": "security",
+      "go_name": "Security",
+      "go_type": "SecurityConfig",
+      "fields": [
+        {"key": "aes_key", "go_name": "AESKey", "go_type": "string", "policy": "provider", "sensitive": true, "required": true},
+        {"key": "pepper", "go_name": "Pepper", "go_type": "string", "sensitive": true, "default": "default-pepper"}
+      ]
+    }
+  ]
+}
+
+-- input/config.conf --
+config_version 1
+
+section server
+    listen 0.0.0.0:8080
+end
+
+section database
+    dsn postgres://app:secret@db.internal:5432/address
+    max_connections 50
+end
+
+section security
+    legacy_key super-secret-aes-key-32bytes
+    pepper cluster-secret-pepper
+end
+
+-- input/main.go --
+package main
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"consumer.test/app/appconfig"
+	"consumer.test/app/internal/nativeconfig"
+)
+
+func main() {
+	ctx := context.Background()
+
+	// 1. Application-owned migration from v1 to v2: migrate legacy_key to aes_key
+	migrations := appconfig.NewMigrations()
+	migrations.Register(1, func(d *nativeconfig.Document) error {
+		sec := d.Section("security")
+		if sec != nil {
+			if entry, _, ok := sec.Entry("legacy_key"); ok {
+				sec.Delete("legacy_key")
+				sec.Set("aes_key", entry.Value)
+			}
+		}
+		return nil
+	})
+
+	// 2. Load configuration with migrations applied
+	cfg, doc, err := appconfig.LoadFile(ctx, "config.conf", appconfig.WithMigrations(migrations))
+	if err != nil {
+		panic(err)
+	}
+
+	// 3. Resolve lazy provider-backed AES key
+	aesVal, err := cfg.Security.AESKey.Resolve(ctx)
+	if err != nil {
+		panic(err)
+	}
+	if aesVal != "super-secret-aes-key-32bytes" {
+		panic("aes key mismatch")
+	}
+
+	// 4. Verify sensitive diagnostics redaction
+	inspected := appconfig.InspectString(doc)
+	if strings.Contains(inspected, "super-secret-aes-key-32bytes") || strings.Contains(inspected, "cluster-secret-pepper") {
+		panic("secret leaked in inspection output")
+	}
+	if !strings.Contains(inspected, "[REDACTED]") {
+		panic("expected [REDACTED] in inspected output")
+	}
+
+	fmt.Printf("address: listen=%s, db=%s, max_conn=%d, aes_resolved=true, redacted=true\n",
+		cfg.Server.Listen, cfg.Database.DSN, cfg.Database.MaxConnections)
+}
+
+-- expected/stdout.txt --
+address: listen=0.0.0.0:8080, db=postgres://app:secret@db.internal:5432/address, max_conn=50, aes_resolved=true, redacted=true

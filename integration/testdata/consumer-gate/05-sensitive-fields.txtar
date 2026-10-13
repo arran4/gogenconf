@@ -1,0 +1,60 @@
+Case: sensitive fields and diagnostic redaction
+
+-- options.json --
+{"scenario":"sensitive-fields"}
+
+-- schema.json --
+{
+  "version": 1,
+  "sections": [
+    {
+      "name": "auth",
+      "go_name": "Auth",
+      "go_type": "AuthConfig",
+      "fields": [
+        {"key": "token", "go_name": "Token", "go_type": "string", "sensitive": true, "required": true}
+      ]
+    }
+  ]
+}
+
+-- input/config.conf --
+config_version 1
+
+section auth
+    token top-secret-token-value
+end
+
+-- input/main.go --
+package main
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"consumer.test/app/appconfig"
+)
+
+func main() {
+	ctx := context.Background()
+	cfg, doc, err := appconfig.LoadFile(ctx, "config.conf")
+	if err != nil {
+		panic(err)
+	}
+	if cfg.Auth.Token != "top-secret-token-value" {
+		panic("token did not resolve")
+	}
+
+	redacted := appconfig.InspectString(doc)
+	if strings.Contains(redacted, "top-secret-token-value") {
+		panic("credential leaked in inspected document")
+	}
+	if !strings.Contains(redacted, "[REDACTED]") {
+		panic("expected [REDACTED] in inspected document")
+	}
+
+	fmt.Println("safe inspect verified")
+}
+
+-- expected/stdout.txt --
+safe inspect verified

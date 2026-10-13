@@ -1,0 +1,54 @@
+Case: nested from_file from_env sources
+
+-- options.json --
+{"scenario":"nested-sources"}
+
+-- schema.json --
+{
+  "version": 1,
+  "sections": [
+    {
+      "name": "security",
+      "go_name": "Security",
+      "go_type": "SecurityConfig",
+      "fields": [
+        {"key": "key", "go_name": "Key", "go_type": "string", "required": true}
+      ]
+    }
+  ]
+}
+
+-- input/secret.key --
+super-secret-from-nested-file
+
+-- input/config.conf --
+config_version 1
+
+section security
+    key from_file(from_env(KEY_PATH))
+end
+
+-- input/main.go --
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"consumer.test/app/appconfig"
+)
+
+func main() {
+	if err := os.Setenv("KEY_PATH", "secret.key"); err != nil {
+		panic(err)
+	}
+	ctx := context.Background()
+	cfg, _, err := appconfig.LoadFile(ctx, "config.conf")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("resolved key: %s\n", cfg.Security.Key)
+}
+
+-- expected/stdout.txt --
+resolved key: super-secret-from-nested-file

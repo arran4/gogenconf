@@ -1,0 +1,51 @@
+Case: input-only and runtime-only field behavior
+
+-- options.json --
+{"scenario":"input-runtime-only"}
+
+-- schema.json --
+{
+  "version": 1,
+  "sections": [
+    {
+      "name": "misc",
+      "go_name": "Misc",
+      "go_type": "MiscConfig",
+      "fields": [
+        {"key": "active", "go_name": "Active", "go_type": "bool", "default": "false"},
+        {"key": "legacy_val", "input_only": true},
+        {"go_name": "InternalState", "go_type": "string", "runtime_only": true}
+      ]
+    }
+  ]
+}
+
+-- input/config.conf --
+config_version 1
+
+section misc
+    legacy_val old-token
+    active true
+end
+
+-- input/main.go --
+package main
+
+import (
+	"context"
+	"fmt"
+	"consumer.test/app/appconfig"
+)
+
+func main() {
+	ctx := context.Background()
+	cfg, _, err := appconfig.LoadFile(ctx, "config.conf")
+	if err != nil {
+		panic(err)
+	}
+	cfg.Misc.InternalState = "initialized"
+	fmt.Printf("misc: active=%t, state=%s\n", cfg.Misc.Active, cfg.Misc.InternalState)
+}
+
+-- expected/stdout.txt --
+misc: active=true, state=initialized

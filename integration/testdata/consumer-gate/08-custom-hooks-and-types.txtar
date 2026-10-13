@@ -1,0 +1,83 @@
+Case: custom types with sanitizer and validator lifecycle hooks
+
+-- options.json --
+{"scenario":"custom-hooks-and-types"}
+
+-- schema.json --
+{
+  "version": 1,
+  "sections": [
+    {
+      "name": "net",
+      "go_name": "Net",
+      "go_type": "NetConfig",
+      "fields": [
+        {"key": "endpoint", "go_name": "Endpoint", "go_type": "SanitizedURL", "default": "http://api.internal/v1"},
+        {"key": "port", "go_name": "Port", "go_type": "ValidatedPort", "default": "8080"}
+      ]
+    }
+  ]
+}
+
+-- input/appconfig/custom_types.go --
+package appconfig
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+type SanitizedURL string
+
+func (s *SanitizedURL) SanitizeConfig() error {
+	*s = SanitizedURL(strings.Replace(string(*s), "http://", "https://", 1))
+	return nil
+}
+
+type ValidatedPort int
+
+func (p *ValidatedPort) DecodeConfig(val string) error {
+	v, err := strconv.Atoi(val)
+	if err != nil {
+		return err
+	}
+	*p = ValidatedPort(v)
+	return nil
+}
+
+func (p *ValidatedPort) ValidateConfig() error {
+	if int(*p) < 1024 || int(*p) > 65535 {
+		return fmt.Errorf("port %d out of range", *p)
+	}
+	return nil
+}
+
+-- input/config.conf --
+config_version 1
+
+section net
+    endpoint http://api.internal/v1
+    port 8443
+end
+
+-- input/main.go --
+package main
+
+import (
+	"context"
+	"fmt"
+	"consumer.test/app/appconfig"
+)
+
+func main() {
+	ctx := context.Background()
+	cfg, _, err := appconfig.LoadFile(ctx, "config.conf")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("net: endpoint=%s, port=%d\n", cfg.Net.Endpoint, cfg.Net.Port)
+}
+
+-- expected/stdout.txt --
+net: endpoint=https://api.internal/v1, port=8443
