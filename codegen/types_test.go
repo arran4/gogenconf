@@ -18,6 +18,7 @@ func TestClassifyType(t *testing.T) {
 		typeStr   string
 		wantKind  codegen.TypeKind
 		wantSlice bool
+		wantMap   bool
 		wantPtr   bool
 		wantErr   bool
 	}{
@@ -39,6 +40,8 @@ func TestClassifyType(t *testing.T) {
 		{typeStr: "[]byte", wantKind: codegen.TypeKindBytes},
 		{typeStr: "[]string", wantKind: codegen.TypeKindString, wantSlice: true},
 		{typeStr: "[]int", wantKind: codegen.TypeKindInt, wantSlice: true},
+		{typeStr: "[$]int", wantKind: codegen.TypeKindInt, wantMap: true},
+		{typeStr: "map[string]int", wantKind: codegen.TypeKindInt, wantMap: true},
 		{typeStr: "[]time.Duration", wantKind: codegen.TypeKindDuration, wantSlice: true},
 		{typeStr: "*int", wantKind: codegen.TypeKindInt, wantPtr: true},
 		{typeStr: "*string", wantKind: codegen.TypeKindString, wantPtr: true},
@@ -49,7 +52,6 @@ func TestClassifyType(t *testing.T) {
 		// Invalid / unsupported types
 		{typeStr: "complex128", wantErr: true},
 		{typeStr: "chan int", wantErr: true},
-		{typeStr: "map[string]int", wantErr: true},
 		{typeStr: "func()", wantErr: true},
 		{typeStr: "[4]int", wantErr: true},
 		{typeStr: "unexported_type", wantErr: true},
@@ -72,6 +74,9 @@ func TestClassifyType(t *testing.T) {
 		}
 		if ti.IsSlice != tt.wantSlice {
 			t.Errorf("ClassifyType(%q) IsSlice = %v, want %v", tt.typeStr, ti.IsSlice, tt.wantSlice)
+		}
+		if ti.IsMap != tt.wantMap {
+			t.Errorf("ClassifyType(%q) IsMap = %v, want %v", tt.typeStr, ti.IsMap, tt.wantMap)
 		}
 		if ti.IsPtr != tt.wantPtr {
 			t.Errorf("ClassifyType(%q) IsPtr = %v, want %v", tt.typeStr, ti.IsPtr, tt.wantPtr)
