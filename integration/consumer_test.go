@@ -64,9 +64,12 @@ func TestOutsideConsumer(t *testing.T) {
 	}
 	// The replace is confined to a disposable consumer so CI tests this candidate,
 	// never a network/cache version. Neither repository commits a replace.
-	mod := "module example.test/consumer\n\ngo 1.25.0\n\nrequire github.com/arran4/gogenconf v0.0.0\nreplace github.com/arran4/gogenconf => " + filepath.ToSlash(root(t)) + "\n"
+	mod := "module example.test/consumer\n\ngo 1.25.0\n\nrequire (\n\tgithub.com/arran4/gogenconf v0.0.0\n\tgolang.org/x/tools v0.39.0 // indirect\n)\n\nreplace github.com/arran4/gogenconf => " + filepath.ToSlash(root(t)) + "\n"
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(mod), 0644); err != nil {
 		t.Fatal(err)
+	}
+	if rootSum, err := os.ReadFile(filepath.Join(root(t), "go.sum")); err == nil {
+		_ = os.WriteFile(filepath.Join(dir, "go.sum"), rootSum, 0644)
 	}
 	run(t, dir, []string{"GOWORK=off"}, "", "go", "generate", "./...")
 	run(t, dir, []string{"GOWORK=off"}, "", "go", "build", "./...")

@@ -24,8 +24,17 @@ type templateData struct {
 func (p *Plan) Generate() (FileSet, error) {
 	var files FileSet
 
+	tmplSet := runtimeTemplates
+	if len(p.Overlays) > 0 {
+		var err error
+		tmplSet, err = BuildTemplateSet(p.Overlays)
+		if err != nil {
+			return nil, fmt.Errorf("build template set: %w", err)
+		}
+	}
+
 	render := func(tmplName, fileName string) error {
-		tmpl := runtimeTemplates.Lookup(tmplName)
+		tmpl := tmplSet.Lookup(tmplName)
 		if tmpl == nil {
 			return fmt.Errorf("runtime template %s not found", tmplName)
 		}

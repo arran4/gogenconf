@@ -9,7 +9,7 @@ Application schemas live in Go; this CLI validates language syntax only.
 Declarers remain unresolved until explicit application binding. No command
 reads environment/file sources mentioned inside a configuration value.
 
-Commands: format, validate, expr format, expr validate, version.
+Commands: format, validate, expr format, expr validate, template layout, template export, version.
 Use --help on any command for examples. Version reports build version/commit/date.
 Manual: https://github.com/arran4/gogenconf#readme
 Site: https://arran4.github.io/gogenconf/
@@ -20,10 +20,14 @@ Subcommands:
     expr format                              Canonicalize one unresolved expression
     expr validate                            Check expression grammar without resolving
     format                                   Canonicalize a document without resolving sources
+    template
+    template export                          Export built-in templates to directory or txtar
+    template layout                          Display built-in template layout
     validate                                 Validate native syntax, not application schema
 {{else}}
     expr
     format     Canonicalize a document without resolving sources
+    template
     validate   Validate native syntax, not application schema
 {{end}}
     help         Print this help message

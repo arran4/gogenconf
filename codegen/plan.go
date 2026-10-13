@@ -58,6 +58,9 @@ type RuntimeOptions struct {
 	// When empty and CapabilityResolver is enabled, all standard declarers are included unless
 	// configured via PlanFromSchema.
 	Declarers []string
+
+	// Overlays specifies an optional ordered list of template overlays to apply.
+	Overlays []Overlay
 }
 
 // Plan models the verified generation requirements and scheduled source emitters.
@@ -66,6 +69,7 @@ type Plan struct {
 	FilePrefix   string
 	Capabilities map[Capability]bool
 	Declarers    map[string]bool
+	Overlays     []Overlay
 }
 
 // PlanRuntime validates options and constructs a generation Plan.
@@ -131,6 +135,7 @@ func PlanRuntime(opts RuntimeOptions) (*Plan, error) {
 		FilePrefix:   prefix,
 		Capabilities: capMap,
 		Declarers:    declMap,
+		Overlays:     opts.Overlays,
 	}, nil
 }
 
