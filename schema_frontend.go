@@ -71,7 +71,8 @@ func ParseSchemaDocument(d *Document) (*Schema, error) {
 	}
 
 	s := &Schema{
-		Version: schemaVersion,
+		Identity: d.Identity,
+		Version:  schemaVersion,
 	}
 
 	for _, sec := range d.Sections {

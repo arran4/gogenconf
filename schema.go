@@ -178,6 +178,7 @@ func (s Schema) Sample() *Document {
 }
 
 type Schema struct {
+	Identity string
 	Version  int
 	Sections []SectionDefinition
 }
