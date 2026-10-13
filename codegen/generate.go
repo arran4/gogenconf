@@ -570,6 +570,19 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 		}
 	}
 	p("return c,nil}\n")
+	p("func decodeValueError(path string,sensitive bool,span %s.Span,err error)error{if sensitive{err=errors.New(\"value conversion failed\")};return &%s.ConfigError{Stage:%s.StageConvert,Path:path,Source:span,Err:err}}\n", rtAlias, rtAlias, rtAlias)
+	for _, sec := range s.Sections {
+		for _, f := range sec.Fields {
+			if f.InputOnly || f.RuntimeOnly || f.Policy == m.ProviderBacked {
+				continue
+			}
+			ti, err := ClassifyType(f.GoType)
+			if err != nil {
+				return nil, err
+			}
+			emitStaticDecoder(p, staticDecoderName(sec.GoName, f.GoName), f.ResolvedGoType(), ti, rtAlias, sec.Name+"."+f.Key, f.Sensitive)
+		}
+	}
 	p("// Resolve constructs ordinary Go fields; provider policy alone defers resolution.\nfunc Resolve(ctx context.Context,d *%s.Document,r *%s.Registry,lookup %s.LookupEnv)(%sConfig,error){\nvar c %sConfig\nif d==nil{return c,fmt.Errorf(\"nil document\")}\nif d.Version>%d{return c,fmt.Errorf(\"unsupported future configuration version\")}\n", rtAlias, rtAlias, rtAlias, qual, qual, s.Version)
 	for _, sec := range s.Sections {
 		section := strconv.Quote(sec.Name)
@@ -590,9 +603,10 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 			}
 			p("if e!=nil{\n")
 			if f.Policy == m.ProviderBacked {
-				p("%s.%s=%s.FieldProvider[%s](r,e,%q,%t)\n", dest, f.GoName, rtAlias, f.GoType, sec.Name+"."+f.Key, f.Sensitive)
+				p("%s.%s=%s.FieldProvider[%s](r,e,%q,%t)\n", dest, f.GoName, rtAlias, f.ResolvedGoType(), sec.Name+"."+f.Key, f.Sensitive)
 			} else {
-				p("value,err:=%s.ResolveField[%s](ctx,r,e,%q,%t)\n", rtAlias, f.GoType, sec.Name+"."+f.Key, f.Sensitive)
+				ti, _ := ClassifyType(f.GoType)
+				p("value,err:=%s(ctx,r,e)\n", staticDecoderCall(staticDecoderName(sec.GoName, f.GoName), ti))
 				p("if err!=nil{return %sConfig{},err}\n", qual)
 				if f.Sensitive {
 					p("if s,ok:=any(&value).(interface{SanitizeConfig()error});ok{if err:=s.SanitizeConfig();err!=nil{return %sConfig{},fmt.Errorf(\"sanitize %%s: failed\", %q)}}\n", qual, sec.Name+"."+f.Key)

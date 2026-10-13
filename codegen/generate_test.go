@@ -24,7 +24,7 @@ func TestGenerationIsDeterministic(t *testing.T) {
 	if !bytes.Equal(first, second) {
 		t.Fatal("generated output is nondeterministic")
 	}
-	for _, fragment := range []string{"// Code generated", "DO NOT EDIT.", "Key     []byte", "gogenconf.Provider[[]byte]", "ResolveField[[]byte]", `"service", "key"`} {
+	for _, fragment := range []string{"// Code generated", "DO NOT EDIT.", "Key     []byte", "gogenconf.Provider[[]byte]", "decodeServiceKey", `"service", "key"`} {
 		if !strings.Contains(string(first), fragment) {
 			t.Errorf("missing %q", fragment)
 		}
@@ -59,7 +59,7 @@ func TestSeparateModelAndBinder(t *testing.T) {
 			t.Fatalf("bad model surface %s", bad)
 		}
 	}
-	for _, want := range []string{"runtimeconfig.Config", "ResolveField[[]byte]", "FieldProvider[[]byte]", `"service", "content"`} {
+	for _, want := range []string{"runtimeconfig.Config", "decodeServiceKey", "FieldProvider[[]byte]", `"service", "content"`} {
 		if !strings.Contains(string(binder), want) {
 			t.Fatalf("binder missing %s", want)
 		}

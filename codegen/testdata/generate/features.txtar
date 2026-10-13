@@ -53,6 +53,186 @@ func Defaults(lookup gogenconf.LookupEnv) (runtimeconfig.Config, error) {
 	c.Service.Tags = strings.FieldsFunc("one,two", func(r rune) bool { return r == ',' })
 	return c, nil
 }
+func decodeValueError(path string, sensitive bool, span gogenconf.Span, err error) error {
+	if sensitive {
+		err = errors.New("value conversion failed")
+	}
+	return &gogenconf.ConfigError{Stage: gogenconf.StageConvert, Path: path, Source: span, Err: err}
+}
+func decodeServiceEndpoint(ctx context.Context, r *gogenconf.Registry, e gogenconf.Expr) (string, error) {
+	var out string
+	var raw string
+	var span gogenconf.Span
+	switch v := e.(type) {
+	case gogenconf.Literal:
+		raw = v.Value
+		span = v.Span
+	case *gogenconf.Literal:
+		if v == nil {
+			return out, decodeValueError("service.endpoint", false, gogenconf.SpanOf(e), fmt.Errorf("nil literal"))
+		}
+		raw = v.Value
+		span = v.Span
+	default:
+		value, err := gogenconf.ResolveField[string](ctx, r, e, "service.endpoint", false)
+		if err != nil {
+			return out, err
+		}
+		raw = value
+		span = gogenconf.SpanOf(e)
+	}
+	_ = span
+	out = raw
+	return out, nil
+}
+func decodeServiceSecret(ctx context.Context, r *gogenconf.Registry, e gogenconf.Expr) ([]byte, error) {
+	var out []byte
+	var raw string
+	var span gogenconf.Span
+	switch v := e.(type) {
+	case gogenconf.Literal:
+		raw = v.Value
+		span = v.Span
+	case *gogenconf.Literal:
+		if v == nil {
+			return out, decodeValueError("service.secret", true, gogenconf.SpanOf(e), fmt.Errorf("nil literal"))
+		}
+		raw = v.Value
+		span = v.Span
+	default:
+		value, err := gogenconf.ResolveField[string](ctx, r, e, "service.secret", true)
+		if err != nil {
+			return out, err
+		}
+		raw = value
+		span = gogenconf.SpanOf(e)
+	}
+	_ = span
+	out = []byte(raw)
+	return out, nil
+}
+func decodeServiceTagsElement(ctx context.Context, r *gogenconf.Registry, e gogenconf.Expr) (string, error) {
+	var out string
+	var raw string
+	var span gogenconf.Span
+	switch v := e.(type) {
+	case gogenconf.Literal:
+		raw = v.Value
+		span = v.Span
+	case *gogenconf.Literal:
+		if v == nil {
+			return out, decodeValueError("service.tags", false, gogenconf.SpanOf(e), fmt.Errorf("nil literal"))
+		}
+		raw = v.Value
+		span = v.Span
+	default:
+		value, err := gogenconf.ResolveField[string](ctx, r, e, "service.tags", false)
+		if err != nil {
+			return out, err
+		}
+		raw = value
+		span = gogenconf.SpanOf(e)
+	}
+	_ = span
+	out = raw
+	return out, nil
+}
+func decodeServiceTags(ctx context.Context, r *gogenconf.Registry, e gogenconf.Expr) ([]string, error) {
+	var out []string
+	switch v := e.(type) {
+	case gogenconf.List:
+		out = make([]string, 0, len(v.Items))
+		for _, item := range v.Items {
+			value, err := decodeServiceTagsElement(ctx, r, item)
+			if err != nil {
+				return out, err
+			}
+			out = append(out, value)
+		}
+		return out, nil
+	case *gogenconf.List:
+		if v == nil {
+			return out, decodeValueError("service.tags", false, gogenconf.SpanOf(e), fmt.Errorf("nil list"))
+		}
+		return decodeServiceTags(ctx, r, *v)
+	default:
+		raw, err := gogenconf.ResolveField[string](ctx, r, e, "service.tags", false)
+		if err != nil {
+			return out, err
+		}
+		items := strings.Split(raw, ",")
+		out = make([]string, 0, len(items))
+		for _, item := range items {
+			value, err := decodeServiceTagsElement(ctx, r, gogenconf.Literal{Value: item, Span: gogenconf.SpanOf(e)})
+			if err != nil {
+				return out, err
+			}
+			out = append(out, value)
+		}
+		return out, nil
+	}
+}
+func decodeWorkersArgsElement(ctx context.Context, r *gogenconf.Registry, e gogenconf.Expr) (string, error) {
+	var out string
+	var raw string
+	var span gogenconf.Span
+	switch v := e.(type) {
+	case gogenconf.Literal:
+		raw = v.Value
+		span = v.Span
+	case *gogenconf.Literal:
+		if v == nil {
+			return out, decodeValueError("worker.args", false, gogenconf.SpanOf(e), fmt.Errorf("nil literal"))
+		}
+		raw = v.Value
+		span = v.Span
+	default:
+		value, err := gogenconf.ResolveField[string](ctx, r, e, "worker.args", false)
+		if err != nil {
+			return out, err
+		}
+		raw = value
+		span = gogenconf.SpanOf(e)
+	}
+	_ = span
+	out = raw
+	return out, nil
+}
+func decodeWorkersArgs(ctx context.Context, r *gogenconf.Registry, e gogenconf.Expr) ([]string, error) {
+	var out []string
+	switch v := e.(type) {
+	case gogenconf.List:
+		out = make([]string, 0, len(v.Items))
+		for _, item := range v.Items {
+			value, err := decodeWorkersArgsElement(ctx, r, item)
+			if err != nil {
+				return out, err
+			}
+			out = append(out, value)
+		}
+		return out, nil
+	case *gogenconf.List:
+		if v == nil {
+			return out, decodeValueError("worker.args", false, gogenconf.SpanOf(e), fmt.Errorf("nil list"))
+		}
+		return decodeWorkersArgs(ctx, r, *v)
+	default:
+		raw, err := gogenconf.ResolveField[string](ctx, r, e, "worker.args", false)
+		if err != nil {
+			return out, err
+		}
+		items := strings.Split(raw, ",")
+		out = make([]string, 0, len(items))
+		for _, item := range items {
+			value, err := decodeWorkersArgsElement(ctx, r, gogenconf.Literal{Value: item, Span: gogenconf.SpanOf(e)})
+			if err != nil {
+				return out, err
+			}
+			out = append(out, value)
+		}
+		return out, nil
+	}
+}
 
 // Resolve constructs ordinary Go fields; provider policy alone defers resolution.
 func Resolve(ctx context.Context, d *gogenconf.Document, r *gogenconf.Registry, lookup gogenconf.LookupEnv) (runtimeconfig.Config, error) {
@@ -66,7 +246,7 @@ func Resolve(ctx context.Context, d *gogenconf.Document, r *gogenconf.Registry, 
 	{
 		e := gogenconf.BindingValue(d, "service", "endpoint", gogenconf.Literal{Value: "https://default.example.test"}, "SERVICE_ENDPOINT", true, lookup)
 		if e != nil {
-			value, err := gogenconf.ResolveField[string](ctx, r, e, "service.endpoint", false)
+			value, err := decodeServiceEndpoint(ctx, r, e)
 			if err != nil {
 				return runtimeconfig.Config{}, err
 			}
@@ -89,7 +269,7 @@ func Resolve(ctx context.Context, d *gogenconf.Document, r *gogenconf.Registry, 
 			return runtimeconfig.Config{}, fmt.Errorf("missing required field service.secret")
 		}
 		if e != nil {
-			value, err := gogenconf.ResolveField[[]byte](ctx, r, e, "service.secret", true)
+			value, err := decodeServiceSecret(ctx, r, e)
 			if err != nil {
 				return runtimeconfig.Config{}, err
 			}
@@ -109,7 +289,7 @@ func Resolve(ctx context.Context, d *gogenconf.Document, r *gogenconf.Registry, 
 	{
 		e := gogenconf.BindingValue(d, "service", "tags", gogenconf.Literal{Value: "one,two"}, "", false, lookup)
 		if e != nil {
-			value, err := gogenconf.ResolveField[[]string](ctx, r, e, "service.tags", false)
+			value, err := decodeServiceTags(ctx, r, e)
 			if err != nil {
 				return runtimeconfig.Config{}, err
 			}
@@ -154,7 +334,7 @@ func Resolve(ctx context.Context, d *gogenconf.Document, r *gogenconf.Registry, 
 		{
 			e := gogenconf.BindingValue(d, section.Name, "args", gogenconf.Literal{Value: "a,b"}, "", false, lookup)
 			if e != nil {
-				value, err := gogenconf.ResolveField[[]string](ctx, r, e, "worker.args", false)
+				value, err := decodeWorkersArgs(ctx, r, e)
 				if err != nil {
 					return runtimeconfig.Config{}, err
 				}

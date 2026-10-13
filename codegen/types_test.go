@@ -158,6 +158,7 @@ func TestStandaloneModuleTypesAndLifecycle(t *testing.T) {
 					{Key: "timeout", GoName: "Timeout", GoType: "time.Duration", Default: m.Literal{Value: "10s"}},
 					{Key: "tags", GoName: "Tags", GoType: "[]string", Default: m.Literal{Value: "web,api"}},
 					{Key: "allowed_ports", GoName: "AllowedPorts", GoType: "[]int", Default: m.Literal{Value: "80,443"}},
+					{Key: "routes", GoName: "Routes", GoType: "[$]int", Default: m.Map{Entries: []m.MapEntry{{Key: "http", Value: m.Literal{Value: "80"}}, {Key: "https", Value: m.Literal{Value: "443"}}}}},
 					{Key: "retries", GoName: "Retries", GoType: "*int", Default: m.Literal{Value: "3"}},
 					{Key: "optional_flag", GoName: "OptionalFlag", GoType: "*bool"},
 					{Key: "sanitized_path", GoName: "SanitizedPath", GoType: "SanitizedString", Default: m.Literal{Value: "/my//path/"}},
@@ -279,6 +280,9 @@ func TestTypesAndLifecycle(t *testing.T) {
 	}
 	if len(cfg.App.AllowedPorts) != 2 || cfg.App.AllowedPorts[0] != 80 || cfg.App.AllowedPorts[1] != 443 {
 		t.Errorf("AllowedPorts = %v, want [80, 443]", cfg.App.AllowedPorts)
+	}
+	if cfg.App.Routes["http"] != 80 || cfg.App.Routes["https"] != 443 {
+		t.Errorf("Routes = %v, want http=80 and https=443", cfg.App.Routes)
 	}
 	if cfg.App.Retries == nil || *cfg.App.Retries != 3 {
 		t.Errorf("Retries = %v, want &3", cfg.App.Retries)

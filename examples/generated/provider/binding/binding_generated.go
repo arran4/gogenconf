@@ -40,6 +40,12 @@ func Defaults(lookup gogenconf.LookupEnv) (runtimeconfig.Config, error) {
 	var c runtimeconfig.Config
 	return c, nil
 }
+func decodeValueError(path string, sensitive bool, span gogenconf.Span, err error) error {
+	if sensitive {
+		err = errors.New("value conversion failed")
+	}
+	return &gogenconf.ConfigError{Stage: gogenconf.StageConvert, Path: path, Source: span, Err: err}
+}
 
 // Resolve constructs ordinary Go fields; provider policy alone defers resolution.
 func Resolve(ctx context.Context, d *gogenconf.Document, r *gogenconf.Registry, lookup gogenconf.LookupEnv) (runtimeconfig.Config, error) {

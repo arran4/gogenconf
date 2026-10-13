@@ -54,6 +54,90 @@ func Defaults(lookup nativeconfig.LookupEnv) (Config, error) {
 	c.Service.Endpoint = "https://api.internal.net"
 	return c, nil
 }
+func decodeValueError(path string, sensitive bool, span nativeconfig.Span, err error) error {
+	if sensitive {
+		err = errors.New("value conversion failed")
+	}
+	return &nativeconfig.ConfigError{Stage: nativeconfig.StageConvert, Path: path, Source: span, Err: err}
+}
+func decodeServiceEndpoint(ctx context.Context, r *nativeconfig.Registry, e nativeconfig.Expr) (string, error) {
+	var out string
+	var raw string
+	var span nativeconfig.Span
+	switch v := e.(type) {
+	case nativeconfig.Literal:
+		raw = v.Value
+		span = v.Span
+	case *nativeconfig.Literal:
+		if v == nil {
+			return out, decodeValueError("service.endpoint", false, nativeconfig.SpanOf(e), fmt.Errorf("nil literal"))
+		}
+		raw = v.Value
+		span = v.Span
+	default:
+		value, err := nativeconfig.ResolveField[string](ctx, r, e, "service.endpoint", false)
+		if err != nil {
+			return out, err
+		}
+		raw = value
+		span = nativeconfig.SpanOf(e)
+	}
+	_ = span
+	out = raw
+	return out, nil
+}
+func decodeServiceAPIKey(ctx context.Context, r *nativeconfig.Registry, e nativeconfig.Expr) (string, error) {
+	var out string
+	var raw string
+	var span nativeconfig.Span
+	switch v := e.(type) {
+	case nativeconfig.Literal:
+		raw = v.Value
+		span = v.Span
+	case *nativeconfig.Literal:
+		if v == nil {
+			return out, decodeValueError("service.api_key", true, nativeconfig.SpanOf(e), fmt.Errorf("nil literal"))
+		}
+		raw = v.Value
+		span = v.Span
+	default:
+		value, err := nativeconfig.ResolveField[string](ctx, r, e, "service.api_key", true)
+		if err != nil {
+			return out, err
+		}
+		raw = value
+		span = nativeconfig.SpanOf(e)
+	}
+	_ = span
+	out = raw
+	return out, nil
+}
+func decodeWorkersConcurrency(ctx context.Context, r *nativeconfig.Registry, e nativeconfig.Expr) (string, error) {
+	var out string
+	var raw string
+	var span nativeconfig.Span
+	switch v := e.(type) {
+	case nativeconfig.Literal:
+		raw = v.Value
+		span = v.Span
+	case *nativeconfig.Literal:
+		if v == nil {
+			return out, decodeValueError("worker.concurrency", false, nativeconfig.SpanOf(e), fmt.Errorf("nil literal"))
+		}
+		raw = v.Value
+		span = v.Span
+	default:
+		value, err := nativeconfig.ResolveField[string](ctx, r, e, "worker.concurrency", false)
+		if err != nil {
+			return out, err
+		}
+		raw = value
+		span = nativeconfig.SpanOf(e)
+	}
+	_ = span
+	out = raw
+	return out, nil
+}
 
 // Resolve constructs ordinary Go fields; provider policy alone defers resolution.
 func Resolve(ctx context.Context, d *nativeconfig.Document, r *nativeconfig.Registry, lookup nativeconfig.LookupEnv) (Config, error) {
@@ -67,7 +151,7 @@ func Resolve(ctx context.Context, d *nativeconfig.Document, r *nativeconfig.Regi
 	{
 		e := nativeconfig.BindingValue(d, "service", "endpoint", nativeconfig.Literal{Value: "https://api.internal.net"}, "", false, lookup)
 		if e != nil {
-			value, err := nativeconfig.ResolveField[string](ctx, r, e, "service.endpoint", false)
+			value, err := decodeServiceEndpoint(ctx, r, e)
 			if err != nil {
 				return Config{}, err
 			}
@@ -90,7 +174,7 @@ func Resolve(ctx context.Context, d *nativeconfig.Document, r *nativeconfig.Regi
 			return Config{}, fmt.Errorf("missing required field service.api_key")
 		}
 		if e != nil {
-			value, err := nativeconfig.ResolveField[string](ctx, r, e, "service.api_key", true)
+			value, err := decodeServiceAPIKey(ctx, r, e)
 			if err != nil {
 				return Config{}, err
 			}
@@ -126,7 +210,7 @@ func Resolve(ctx context.Context, d *nativeconfig.Document, r *nativeconfig.Regi
 		{
 			e := nativeconfig.BindingValue(d, section.Name, "concurrency", nativeconfig.Literal{Value: "4"}, "", false, lookup)
 			if e != nil {
-				value, err := nativeconfig.ResolveField[string](ctx, r, e, "worker.concurrency", false)
+				value, err := decodeWorkersConcurrency(ctx, r, e)
 				if err != nil {
 					return Config{}, err
 				}

@@ -40,6 +40,38 @@ func Defaults(lookup gogenconf.LookupEnv) (runtimeconfig.Config, error) {
 	var c runtimeconfig.Config
 	return c, nil
 }
+func decodeValueError(path string, sensitive bool, span gogenconf.Span, err error) error {
+	if sensitive {
+		err = errors.New("value conversion failed")
+	}
+	return &gogenconf.ConfigError{Stage: gogenconf.StageConvert, Path: path, Source: span, Err: err}
+}
+func decodeWorkersLabel(ctx context.Context, r *gogenconf.Registry, e gogenconf.Expr) (string, error) {
+	var out string
+	var raw string
+	var span gogenconf.Span
+	switch v := e.(type) {
+	case gogenconf.Literal:
+		raw = v.Value
+		span = v.Span
+	case *gogenconf.Literal:
+		if v == nil {
+			return out, decodeValueError("worker.label", false, gogenconf.SpanOf(e), fmt.Errorf("nil literal"))
+		}
+		raw = v.Value
+		span = v.Span
+	default:
+		value, err := gogenconf.ResolveField[string](ctx, r, e, "worker.label", false)
+		if err != nil {
+			return out, err
+		}
+		raw = value
+		span = gogenconf.SpanOf(e)
+	}
+	_ = span
+	out = raw
+	return out, nil
+}
 
 // Resolve constructs ordinary Go fields; provider policy alone defers resolution.
 func Resolve(ctx context.Context, d *gogenconf.Document, r *gogenconf.Registry, lookup gogenconf.LookupEnv) (runtimeconfig.Config, error) {
@@ -62,7 +94,7 @@ func Resolve(ctx context.Context, d *gogenconf.Document, r *gogenconf.Registry, 
 				return runtimeconfig.Config{}, fmt.Errorf("missing required field worker.label")
 			}
 			if e != nil {
-				value, err := gogenconf.ResolveField[string](ctx, r, e, "worker.label", false)
+				value, err := decodeWorkersLabel(ctx, r, e)
 				if err != nil {
 					return runtimeconfig.Config{}, err
 				}
