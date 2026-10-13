@@ -9,7 +9,6 @@ import (
 	"go/ast"
 	"go/format"
 	"go/token"
-	"go/types"
 	"strconv"
 	"strings"
 
@@ -84,12 +83,16 @@ func Validate(s m.Schema) error {
 				}
 				keys[f.Key] = true
 			}
-			tv, err := types.Eval(token.NewFileSet(), nil, token.NoPos, f.GoType)
-			if err != nil || !tv.IsType() {
-				return fmt.Errorf("invalid Go type for %s.%s", sec.Name, f.Key)
+			ti, err := ClassifyType(f.GoType)
+			if err != nil {
+				return err
 			}
-			if !supportedGeneratedType(f.GoType) {
-				return fmt.Errorf("unsupported type mapping %s", f.GoType)
+			if f.Default != nil {
+				if lit, ok := f.Default.(m.Literal); ok {
+					if err := ValidateTypeDefault(ti, lit.Value); err != nil {
+						return fmt.Errorf("%s.%s: %w", sec.Name, f.Key, err)
+					}
+				}
 			}
 			if f.Policy != m.Eager && f.Policy != m.ProviderBacked {
 				return fmt.Errorf("unsupported resolution policy")
@@ -98,9 +101,6 @@ func Validate(s m.Schema) error {
 				return fmt.Errorf("runtime-only field has persisted policy")
 			}
 			if _, err := expression(f.Default); err != nil {
-				return fmt.Errorf("%s.%s: %w", sec.Name, f.Key, err)
-			}
-			if err := validateGeneratedDefault(f.GoType, f.Default); err != nil {
 				return fmt.Errorf("%s.%s: %w", sec.Name, f.Key, err)
 			}
 		}
@@ -333,6 +333,65 @@ func emitGeneratedInteger(p func(string, ...any), dest, raw, path, sensitive, pa
 func emitGeneratedFloat(p func(string, ...any), dest, raw, path, sensitive, bits, cast string) {
 	p("parsed,err:=strconv.ParseFloat(%s,%s);if err!=nil{return c,defaultValueError(%s,%s,err)};%s=%s(parsed)", raw, bits, path, sensitive, dest, cast)
 }
+
+// emitTypedDefaultValue emits field-specific conversion rather than relying on
+// the generic resolver. Every fallible conversion returns its error, while
+// defaultValueError redacts sensitive values before they reach diagnostics.
+func emitTypedDefaultValue(p func(string, ...any), dest string, ti TypeInfo, raw, path string, sensitive bool) {
+	if !ti.IsPtr && !ti.IsSlice && (ti.Kind == TypeKindString || ti.Kind == TypeKindBytes) {
+		emitTypedDefaultValueBody(p, dest, ti, raw, path, sensitive)
+		p("\n")
+		return
+	}
+	if ti.IsSlice && ti.Kind == TypeKindString && ti.ElemType == "string" {
+		p("%s=strings.FieldsFunc(%s,func(r rune)bool{return r==','})\n", dest, raw)
+		return
+	}
+	p("{")
+	emitTypedDefaultValueBody(p, dest, ti, raw, path, sensitive)
+	p("}\n")
+}
+
+func emitTypedDefaultValueBody(p func(string, ...any), dest string, ti TypeInfo, raw, path string, sensitive bool) {
+	pathLit := strconv.Quote(path)
+	sensitiveLit := strconv.FormatBool(sensitive)
+	if ti.IsPtr {
+		valueType := ti.ElemType
+		valueInfo := ti
+		valueInfo.GoType, valueInfo.IsPtr = valueType, false
+		p("var defaultValue %s;", valueType)
+		emitTypedDefaultValueBody(p, "defaultValue", valueInfo, raw, path, sensitive)
+		p("%s=&defaultValue;", dest)
+		return
+	}
+	if ti.IsSlice {
+		itemInfo := ti
+		itemInfo.GoType, itemInfo.IsSlice = ti.ElemType, false
+		p("defaultItems:=strings.Split(%s,\",\");%s=make(%s,0,len(defaultItems));for _,defaultItem:=range defaultItems{var defaultValue %s;", raw, dest, ti.GoType, ti.ElemType)
+		emitTypedDefaultValueBody(p, "defaultValue", itemInfo, "defaultItem", path, sensitive)
+		p("%s=append(%s,defaultValue)};", dest, dest)
+		return
+	}
+	switch ti.Kind {
+	case TypeKindString:
+		p("%s=%s;", dest, raw)
+	case TypeKindBytes:
+		p("%s=[]byte(%s);", dest, raw)
+	case TypeKindBool:
+		p("parsed,err:=strconv.ParseBool(%s);if err!=nil{return c,defaultValueError(%s,%s,err)};%s=parsed;", raw, pathLit, sensitiveLit, dest)
+	case TypeKindInt:
+		p("parsed,err:=strconv.ParseInt(%s,0,%d);if err!=nil{return c,defaultValueError(%s,%s,err)};%s=%s(parsed);", raw, typeBitSize(ti), pathLit, sensitiveLit, dest, ti.GoType)
+	case TypeKindUint:
+		p("parsed,err:=strconv.ParseUint(%s,0,%d);if err!=nil{return c,defaultValueError(%s,%s,err)};%s=%s(parsed);", raw, typeBitSize(ti), pathLit, sensitiveLit, dest, ti.GoType)
+	case TypeKindFloat:
+		p("parsed,err:=strconv.ParseFloat(%s,%d);if err!=nil{return c,defaultValueError(%s,%s,err)};%s=%s(parsed);", raw, typeBitSize(ti), pathLit, sensitiveLit, dest, ti.GoType)
+	case TypeKindDuration:
+		p("parsed,err:=time.ParseDuration(%s);if err!=nil{return c,defaultValueError(%s,%s,err)};%s=parsed;", raw, pathLit, sensitiveLit, dest)
+	case TypeKindCustom:
+		p("if dec,ok:=any(&%s).(interface{DecodeConfig(string)error});ok{if err:=dec.DecodeConfig(%s);err!=nil{return c,defaultValueError(%s,%s,err)}}else if dec,ok:=any(&%s).(interface{UnmarshalText([]byte)error});ok{if err:=dec.UnmarshalText([]byte(%s));err!=nil{return c,defaultValueError(%s,%s,err)}}else{return c,fmt.Errorf(\"default %%s: unsupported custom decoder\",%s)};", dest, raw, pathLit, sensitiveLit, dest, raw, pathLit, sensitiveLit, pathLit)
+	}
+}
+
 func exported(s string) bool { return token.IsIdentifier(s) && ast.IsExported(s) }
 
 func expression(e m.Expr) (string, error) {
@@ -435,16 +494,12 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 	p("// Code generated by gogenconf. DO NOT EDIT.\n\npackage %s\n", o.Package)
 	qual := ""
 	if binder {
-		if o.EmitAppAPI {
-			p("import(\"bytes\";\"context\";\"errors\";\"fmt\";\"io\";\"os\";\"strconv\";\"strings\"; %s %q)\n", rtAlias, rtImport)
-			p("var _ = bytes.NewReader\nvar _ = io.WriteString\nvar _ = os.Open\n")
-		} else {
-			p("import(\"context\";\"errors\";\"fmt\";\"strconv\";\"strings\"; %s %q)\n", rtAlias, rtImport)
-		}
 		if !model {
 			p("import runtimeconfig %q\n", o.ConfigImport)
 			qual = "runtimeconfig."
 		}
+		p("import(\"bytes\";\"context\";\"errors\";\"fmt\";\"io\";\"os\";\"strconv\";\"strings\";\"time\"; %s %q)\n", rtAlias, rtImport)
+		p("var _ = bytes.NewReader\nvar _ = io.WriteString\nvar _ = os.Open\nvar _ = strconv.Itoa\nvar _ = time.Second\n")
 		p("var _ = strings.Join\nvar _ = fmt.Errorf\nvar _ = errors.New\nvar _ = strconv.IntSize\n")
 	} else {
 		usesProvider := false
@@ -499,9 +554,9 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 				continue
 			}
 			dest := "c." + sec.GoName + "." + f.GoName
-			if f.Default != nil {
-				emitGeneratedDefault(p, dest, f.GoType, f.Default, sec.Name+"."+f.Key, f.Sensitive)
-				p("\n")
+			ti, _ := ClassifyType(f.GoType)
+			if v, ok := f.Default.(m.Literal); ok {
+				emitTypedDefaultValue(p, dest, ti, strconv.Quote(v.Value), sec.Name+"."+f.Key, f.Sensitive)
 			}
 			if f.Environment != "" {
 				p("if lookup!=nil{if v,ok:=lookup(%q);ok", f.Environment)
@@ -509,8 +564,7 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 					p("&&v!=\"\"")
 				}
 				p("{")
-				emitGeneratedEnvironment(p, dest, f.GoType, "v", sec.Name+"."+f.Key, f.Sensitive)
-				p(";")
+				emitTypedDefaultValueBody(p, dest, ti, "v", sec.Name+"."+f.Key, f.Sensitive)
 				p("}}\n")
 			}
 		}
@@ -538,14 +592,27 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 			if f.Policy == m.ProviderBacked {
 				p("%s.%s=%s.FieldProvider[%s](r,e,%q,%t)\n", dest, f.GoName, rtAlias, f.GoType, sec.Name+"."+f.Key, f.Sensitive)
 			} else {
-				p("value,err:=%s.ResolveField[%s](ctx,r,e,%q,%t);if err!=nil{return %sConfig{},err};%s.%s=value\n", rtAlias, f.ResolvedGoType(), sec.Name+"."+f.Key, f.Sensitive, qual, dest, f.GoName)
+				p("value,err:=%s.ResolveField[%s](ctx,r,e,%q,%t)\n", rtAlias, f.GoType, sec.Name+"."+f.Key, f.Sensitive)
+				p("if err!=nil{return %sConfig{},err}\n", qual)
+				if f.Sensitive {
+					p("if s,ok:=any(&value).(interface{SanitizeConfig()error});ok{if err:=s.SanitizeConfig();err!=nil{return %sConfig{},fmt.Errorf(\"sanitize %%s: failed\", %q)}}\n", qual, sec.Name+"."+f.Key)
+					p("if v,ok:=any(&value).(interface{ValidateConfig()error});ok{if err:=v.ValidateConfig();err!=nil{return %sConfig{},fmt.Errorf(\"validate %%s: failed\", %q)}}\n", qual, sec.Name+"."+f.Key)
+				} else {
+					p("if s,ok:=any(&value).(interface{SanitizeConfig()error});ok{if err:=s.SanitizeConfig();err!=nil{return %sConfig{},fmt.Errorf(\"sanitize %%s: %%w\", %q, err)}}\n", qual, sec.Name+"."+f.Key)
+					p("if v,ok:=any(&value).(interface{ValidateConfig()error});ok{if err:=v.ValidateConfig();err!=nil{return %sConfig{},fmt.Errorf(\"validate %%s: %%w\", %q, err)}}\n", qual, sec.Name+"."+f.Key)
+				}
+				p("%s.%s=value\n", dest, f.GoName)
 			}
 			p("}}\n")
 		}
+		p("if s,ok:=any(&%s).(interface{SanitizeConfig()error});ok{if err:=s.SanitizeConfig();err!=nil{return %sConfig{},fmt.Errorf(\"sanitize %%s: %%w\", %q, err)}}\n", dest, qual, sec.Name)
+		p("if v,ok:=any(&%s).(interface{ValidateConfig()error});ok{if err:=v.ValidateConfig();err!=nil{return %sConfig{},fmt.Errorf(\"validate %%s: %%w\", %q, err)}}\n", dest, qual, sec.Name)
 		if sec.Repeated {
 			p("c.%s=append(c.%s,v)}\n", sec.GoName, sec.GoName)
 		}
 	}
+	p("if s,ok:=any(&c).(interface{SanitizeConfig()error});ok{if err:=s.SanitizeConfig();err!=nil{return %sConfig{},fmt.Errorf(\"sanitize config: %%w\", err)}}\n", qual)
+	p("if v,ok:=any(&c).(interface{ValidateConfig()error});ok{if err:=v.ValidateConfig();err!=nil{return %sConfig{},fmt.Errorf(\"validate config: %%w\", err)}}\n", qual)
 	p("return c,nil}\n")
 	if o.EmitAppAPI {
 		if err := emitAppAPI(&b, s, o, qual, rtAlias); err != nil {
