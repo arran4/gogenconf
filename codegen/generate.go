@@ -929,7 +929,12 @@ func emitSectionStaticDecoders(p func(string, ...any), sec m.SectionDefinition, 
 		if err != nil {
 			return err
 		}
-		emitStaticDecoder(p, staticDecoderName(prefix, f.GoName), f.ResolvedGoType(), ti, rtAlias, path+"."+f.Key, f.Sensitive)
+		if f.Parser != "" {
+			symbol, _ := parserSymbol(f.Parser)
+			emitStaticParserDecoder(p, staticDecoderName(prefix, f.GoName), f.ResolvedGoType(), symbol+"Func", rtAlias, path+"."+f.Key, f.Sensitive)
+		} else {
+			emitStaticDecoder(p, staticDecoderName(prefix, f.GoName), f.ResolvedGoType(), ti, rtAlias, path+"."+f.Key, f.Sensitive)
+		}
 	}
 	for _, child := range sec.Children {
 		if err := emitSectionStaticDecoders(p, child, prefix+child.GoName, path+"."+child.Name, rtAlias); err != nil {
@@ -985,6 +990,9 @@ func emitSectionValueResolve(p func(string, ...any), sec m.SectionDefinition, se
 		p("if e!=nil{")
 		if f.Policy == m.ProviderBacked {
 			p("%s.%s=%s.FieldProvider[%s](r,e,%q,%t)\n", dest, f.GoName, rtAlias, f.ResolvedGoType(), path+"."+f.Key, f.Sensitive)
+		} else if f.Parser != "" {
+			symbol, _ := parserSymbol(f.Parser)
+			p("decoded,err:=decode%s%s(e,options.%s);if err!=nil{return %sConfig{},err};%s.%s=decoded\n", prefix, f.GoName, symbol, qual, dest, f.GoName)
 		} else {
 			p("decoded,err:=decode%s%s(ctx,r,e);if err!=nil{return %sConfig{},err}\n", prefix, f.GoName, qual)
 			if f.Sensitive {

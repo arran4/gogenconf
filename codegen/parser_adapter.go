@@ -39,11 +39,23 @@ func parserDefinitions(s m.Schema) ([]parserDefinition, error) {
 			return nil, err
 		}
 	}
-	for _, sec := range s.Sections {
+	var walk func(m.SectionDefinition) error
+	walk = func(sec m.SectionDefinition) error {
 		for _, f := range sec.Fields {
 			if err := add(f); err != nil {
-				return nil, err
+				return err
 			}
+		}
+		for _, child := range sec.Children {
+			if err := walk(child); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for _, sec := range s.Sections {
+		if err := walk(sec); err != nil {
+			return nil, err
 		}
 	}
 	defs := make([]parserDefinition, 0, len(seen))

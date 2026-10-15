@@ -114,3 +114,22 @@ func TestParserNamesNeedNotBeGoIdentifiers(t *testing.T) {
 		t.Fatal("ambiguous generated parser symbol accepted")
 	}
 }
+
+func TestGeneratedNestedParserAdapterUsesStaticDispatch(t *testing.T) {
+	schema := m.Schema{Version: 1, Sections: []m.SectionDefinition{{
+		Name: "project", GoName: "Projects", GoType: "ProjectConfig", Repeated: true,
+		Children: []m.SectionDefinition{{
+			Name: "build", GoName: "Build", GoType: "BuildConfig",
+			Fields: []m.Field{{Key: "rule", GoName: "Rule", GoType: "RuleExpression", Parser: "customer-rule"}},
+		}},
+	}}}
+	generated, err := codegen.GenerateAppAPI(schema, codegen.Options{Package: "appconfig", RuntimeImport: "example.test/nested/nativeconfig"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"type CustomerRuleFunc func", "func WithCustomerRule", "decodeProjectsBuildRule(e, options.CustomerRule)"} {
+		if !strings.Contains(string(generated), want) {
+			t.Fatalf("nested generated parser dispatch missing %q", want)
+		}
+	}
+}
