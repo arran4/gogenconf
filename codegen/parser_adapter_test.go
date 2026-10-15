@@ -14,7 +14,7 @@ import (
 func TestGeneratedNamedParserAdapter(t *testing.T) {
 	schema := m.Schema{Version: 1, Sections: []m.SectionDefinition{{
 		Name: "policy", GoName: "Policy", GoType: "PolicyConfig", Fields: []m.Field{{
-			Key: "rule", GoName: "Rule", GoType: "RuleExpression", Parser: "custom_rule_ast",
+			Key: "rule", GoName: "Rule", GoType: "RuleExpression", Parser: "custom_rule_ast", Sensitive: true,
 		}},
 	}}}
 	generated, err := codegen.GenerateAppAPI(schema, codegen.Options{Package: "appconfig", RuntimeImport: "example.test/generated/nativeconfig"})
@@ -65,7 +65,9 @@ func ParseRule(raw string, span nativeconfig.Span) (RuleExpression, error) { ret
 import (
  "context"
  "fmt"
+ "strings"
  "example.test/generated/appconfig"
+ "example.test/generated/nativeconfig"
 )
 func main() {
 	parse := appconfig.ParseRule
@@ -74,6 +76,8 @@ func main() {
 	var nilParse appconfig.CustomRuleAstFunc
 	if _, _, err := appconfig.LoadBytes(context.Background(), input, appconfig.WithCustomRuleAst(nilParse)); err == nil { panic("nil parser accepted") }
 	if _, _, err := appconfig.LoadBytes(context.Background(), input, appconfig.WithCustomRuleAst(parse), appconfig.WithCustomRuleAst(parse)); err == nil { panic("duplicate parser accepted") }
+	fail := func(raw string, span nativeconfig.Span) (appconfig.RuleExpression, error) { return nil, fmt.Errorf("secret expression %s", raw) }
+	if _, _, err := appconfig.LoadBytes(context.Background(), input, appconfig.WithCustomRuleAst(fail)); err == nil || strings.Contains(err.Error(), "secret expression") || strings.Contains(err.Error(), "4 > a") { panic(fmt.Sprintf("sensitive parser error leaked: %v", err)) }
 	cfg, _, err := appconfig.LoadBytes(context.Background(), input, appconfig.WithCustomRuleAst(parse))
 	if err != nil { panic(err) }
 	formatted, err := appconfig.FormatCustomRuleAst(cfg.Policy.Rule)
