@@ -80,7 +80,14 @@ func ParseSchemaDocument(d *Document) (*Schema, error) {
 		if err != nil {
 			return nil, err
 		}
-		s.Sections = append(s.Sections, secDef)
+		if sec.Name == "root" {
+			if secDef.Repeated || len(secDef.Documentation) != 0 || secDef.GoName != "Root" || secDef.GoType != "RootConfig" {
+				return nil, &ConfigError{Stage: StageValidate, Source: sec.Span, Err: fmt.Errorf("root schema declaration supports fields only")}
+			}
+			s.RootFields = append(s.RootFields, secDef.Fields...)
+		} else {
+			s.Sections = append(s.Sections, secDef)
+		}
 	}
 
 	return s, nil

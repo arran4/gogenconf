@@ -514,6 +514,16 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 	}
 	if model {
 		p("type Config struct {\n")
+		for _, f := range s.RootFields {
+			if f.InputOnly {
+				continue
+			}
+			typ := f.ResolvedGoType()
+			if f.Policy == m.ProviderBacked {
+				typ = rtAlias + ".Provider[" + typ + "]"
+			}
+			p("%s %s\n", f.GoName, typ)
+		}
 		for _, sec := range s.Sections {
 			prefix := ""
 			if sec.Repeated {
@@ -545,6 +555,15 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 	}
 	p("var ErrInvalidDefault=errors.New(\"invalid generated default\")\nfunc defaultValueError(path string,sensitive bool,err error)error{if sensitive{return fmt.Errorf(\"default %%s: %%w\",path,ErrInvalidDefault)};return fmt.Errorf(\"default %%s: %%w\",path,err)}\n")
 	p("// Defaults returns concrete static defaults and optional legacy environment overrides.\n// Invalid static or environment values are errors; they are never treated as omission.\nfunc Defaults(lookup %s.LookupEnv) (%sConfig,error) { var c %sConfig\n", rtAlias, qual, qual)
+	for _, f := range s.RootFields {
+		if f.InputOnly || f.RuntimeOnly || f.Policy == m.ProviderBacked {
+			continue
+		}
+		ti, _ := ClassifyType(f.GoType)
+		if v, ok := f.Default.(m.Literal); ok {
+			emitTypedDefaultValue(p, "c."+f.GoName, ti, strconv.Quote(v.Value), f.Key, f.Sensitive)
+		}
+	}
 	for _, sec := range s.Sections {
 		if sec.Repeated {
 			continue
@@ -571,6 +590,16 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 	}
 	p("return c,nil}\n")
 	p("func decodeValueError(path string,sensitive bool,span %s.Span,err error)error{if sensitive{err=errors.New(\"value conversion failed\")};return &%s.ConfigError{Stage:%s.StageConvert,Path:path,Source:span,Err:err}}\n", rtAlias, rtAlias, rtAlias)
+	for _, f := range s.RootFields {
+		if f.InputOnly || f.RuntimeOnly || f.Policy == m.ProviderBacked {
+			continue
+		}
+		ti, err := ClassifyType(f.GoType)
+		if err != nil {
+			return nil, err
+		}
+		emitStaticDecoder(p, staticDecoderName("Root", f.GoName), f.ResolvedGoType(), ti, rtAlias, f.Key, f.Sensitive)
+	}
 	for _, sec := range s.Sections {
 		for _, f := range sec.Fields {
 			if f.InputOnly || f.RuntimeOnly || f.Policy == m.ProviderBacked {
@@ -584,6 +613,23 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 		}
 	}
 	p("// Resolve constructs ordinary Go fields; provider policy alone defers resolution.\nfunc Resolve(ctx context.Context,d *%s.Document,r *%s.Registry,lookup %s.LookupEnv)(%sConfig,error){\nvar c %sConfig\nif d==nil{return c,fmt.Errorf(\"nil document\")}\nif d.Version>%d{return c,fmt.Errorf(\"unsupported future configuration version\")}\n", rtAlias, rtAlias, rtAlias, qual, qual, s.Version)
+	for _, f := range s.RootFields {
+		if f.InputOnly || f.RuntimeOnly {
+			continue
+		}
+		ex, _ := expressionWithPkg(f.Default, rtAlias)
+		p("{e:=%s.BindingValue(d,\"\",%q,%s,%q,%t,lookup)\n", rtAlias, f.Key, ex, f.Environment, f.EnvironmentNonEmpty)
+		if f.Required {
+			p("if e==nil{return %sConfig{},fmt.Errorf(%q)}\n", qual, "missing required field "+f.Key)
+		}
+		p("if e!=nil{")
+		if f.Policy == m.ProviderBacked {
+			p("c.%s=%s.FieldProvider[%s](r,e,%q,%t)\n", f.GoName, rtAlias, f.ResolvedGoType(), f.Key, f.Sensitive)
+		} else {
+			p("value,err:=decodeRoot%s(ctx,r,e);if err!=nil{return %sConfig{},err};c.%s=value\n", f.GoName, qual, f.GoName)
+		}
+		p("}}\n")
+	}
 	for _, sec := range s.Sections {
 		section := strconv.Quote(sec.Name)
 		dest := "c." + sec.GoName

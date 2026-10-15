@@ -180,7 +180,11 @@ func (s Schema) Sample() *Document {
 type Schema struct {
 	Identity string
 	Version  int
-	Sections []SectionDefinition
+	// RootFields are scalar/collection declarations stored directly on the
+	// Document rather than in a Section. They deliberately use the same Field
+	// contract as section fields.
+	RootFields []Field
+	Sections   []SectionDefinition
 }
 
 func (s Schema) Seed() *Document {

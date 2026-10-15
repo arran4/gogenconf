@@ -130,6 +130,34 @@ end
 	}
 }
 
+func TestParseSchemaRootFields(t *testing.T) {
+	s, err := gogenconf.ParseSchema(strings.NewReader(`config for example-schema version 1
+
+version 1
+
+section root
+    section field name string
+        required true
+    end
+end
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.RootFields) != 1 || s.RootFields[0].Key != "name" || !s.RootFields[0].Required {
+		t.Fatalf("root fields = %#v", s.RootFields)
+	}
+	generated, err := codegen.GenerateAppAPI(*s, codegen.Options{Package: "appconfig", LibraryImport: "github.com/arran4/gogenconf"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Name string", `BindingValue(d, "", "name"`, "decodeRootName"} {
+		if !strings.Contains(string(generated), want) {
+			t.Fatalf("generated root decoder missing %q", want)
+		}
+	}
+}
+
 func TestSchemaFrontendCodeGeneration(t *testing.T) {
 	input := `config for myapp-schema version 1
 
