@@ -138,18 +138,19 @@ version 1
 section root
     section field name string
         required true
+        parser "custom_rule_ast"
     end
 end
 `))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(s.RootFields) != 1 || s.RootFields[0].Key != "name" || !s.RootFields[0].Required {
+	if len(s.RootFields) != 1 || s.RootFields[0].Key != "name" || !s.RootFields[0].Required || s.RootFields[0].Parser != "custom_rule_ast" {
 		t.Fatalf("root fields = %#v", s.RootFields)
 	}
 	formatted := gogenconf.FormatSchema("example", s)
 	roundTrip, err := gogenconf.ParseSchema(strings.NewReader(formatted))
-	if err != nil || len(roundTrip.RootFields) != 1 || roundTrip.RootFields[0].Key != "name" {
+	if err != nil || len(roundTrip.RootFields) != 1 || roundTrip.RootFields[0].Key != "name" || roundTrip.RootFields[0].Parser != "custom_rule_ast" {
 		t.Fatalf("root schema round trip failed: %#v, %v", roundTrip, err)
 	}
 	generated, err := codegen.GenerateAppAPI(*s, codegen.Options{Package: "appconfig", LibraryImport: "github.com/arran4/gogenconf"})

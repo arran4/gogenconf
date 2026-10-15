@@ -16,23 +16,34 @@ type parserDefinition struct {
 
 func parserDefinitions(s m.Schema) ([]parserDefinition, error) {
 	seen := map[string]parserDefinition{}
+	add := func(f m.Field) error {
+		if f.Parser == "" || f.InputOnly || f.RuntimeOnly {
+			return nil
+		}
+		symbol, err := parserSymbol(f.Parser)
+		if err != nil {
+			return err
+		}
+		def := parserDefinition{Name: f.Parser, Symbol: symbol, GoType: f.ResolvedGoType()}
+		if previous, ok := seen[symbol]; ok {
+			if previous.Name != def.Name || previous.GoType != def.GoType {
+				return fmt.Errorf("parser %q has incompatible generated adapter types %s and %s", f.Parser, previous.GoType, def.GoType)
+			}
+			return nil
+		}
+		seen[symbol] = def
+		return nil
+	}
+	for _, f := range s.RootFields {
+		if err := add(f); err != nil {
+			return nil, err
+		}
+	}
 	for _, sec := range s.Sections {
 		for _, f := range sec.Fields {
-			if f.Parser == "" || f.InputOnly || f.RuntimeOnly {
-				continue
-			}
-			symbol, err := parserSymbol(f.Parser)
-			if err != nil {
+			if err := add(f); err != nil {
 				return nil, err
 			}
-			def := parserDefinition{Name: f.Parser, Symbol: symbol, GoType: f.ResolvedGoType()}
-			if previous, ok := seen[symbol]; ok {
-				if previous.Name != def.Name || previous.GoType != def.GoType {
-					return nil, fmt.Errorf("parser %q has incompatible generated adapter types %s and %s", f.Parser, previous.GoType, def.GoType)
-				}
-				continue
-			}
-			seen[symbol] = def
 		}
 	}
 	defs := make([]parserDefinition, 0, len(seen))

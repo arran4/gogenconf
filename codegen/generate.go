@@ -37,6 +37,7 @@ func Validate(s m.Schema) error {
 		return fmt.Errorf("schema requires a positive version")
 	}
 	paths, names, typesSeen := map[string]bool{}, map[string]bool{}, map[string]bool{"Config": true}
+	parserNames := map[string]string{}
 	rootKeys := map[string]bool{}
 	for _, f := range s.RootFields {
 		for _, e := range f.Examples {
@@ -59,6 +60,16 @@ func Validate(s m.Schema) error {
 		}
 		if !exported(f.GoName) || names[f.GoName] {
 			return fmt.Errorf("invalid or duplicate root field mapping %s", f.GoName)
+		}
+		if f.Parser != "" {
+			symbol, err := parserSymbol(f.Parser)
+			if err != nil {
+				return fmt.Errorf("invalid parser mapping root.%s: %w", f.Key, err)
+			}
+			if previous, exists := parserNames[symbol]; exists && previous != f.Parser {
+				return fmt.Errorf("parser names %q and %q both map to generated symbol %s", previous, f.Parser, symbol)
+			}
+			parserNames[symbol] = f.Parser
 		}
 		names[f.GoName] = true
 		if !f.RuntimeOnly {
@@ -101,7 +112,6 @@ func Validate(s m.Schema) error {
 			return fmt.Errorf("root.%s: %w", f.Key, err)
 		}
 	}
-	parserNames := map[string]string{}
 	for _, sec := range s.Sections {
 		if sec.Name == "" || paths[sec.Name] {
 			return fmt.Errorf("duplicate or empty section %q", sec.Name)

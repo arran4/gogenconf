@@ -553,6 +553,9 @@ func FormatSchema(identity string, s *Schema) string {
 			if f.EnvironmentNonEmpty {
 				b.WriteString("        env_non_empty true\n")
 			}
+			if f.Parser != "" {
+				fmt.Fprintf(&b, "        parser %s\n", FormatExpr(Literal{Value: f.Parser}))
+			}
 			b.WriteString("    end\n")
 		}
 		b.WriteString("end\n\n")

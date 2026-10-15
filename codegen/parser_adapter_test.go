@@ -12,10 +12,15 @@ import (
 )
 
 func TestGeneratedNamedParserAdapter(t *testing.T) {
-	schema := m.Schema{Version: 1, Sections: []m.SectionDefinition{{
-		Name: "policy", GoName: "Policy", GoType: "PolicyConfig", Fields: []m.Field{{
-			Key: "rule", GoName: "Rule", GoType: "RuleExpression", Parser: "custom_rule_ast", Sensitive: true,
-		}},
+	doc, err := m.Parse(strings.NewReader("config for generated version 1\n\nrule CustomerParser(4 > a && b <= 9)\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := doc.Entry("rule"); !ok {
+		t.Fatal("root parser expression was not retained as a root entry")
+	}
+	schema := m.Schema{Version: 1, RootFields: []m.Field{{
+		Key: "rule", GoName: "Rule", GoType: "RuleExpression", Parser: "custom_rule_ast", Sensitive: true,
 	}}}
 	generated, err := codegen.GenerateAppAPI(schema, codegen.Options{Package: "appconfig", RuntimeImport: "example.test/generated/nativeconfig"})
 	if err != nil {
@@ -25,6 +30,11 @@ func TestGeneratedNamedParserAdapter(t *testing.T) {
 	for _, want := range []string{"type CustomRuleAstFunc func", "func WithCustomRuleAst", "func FormatCustomRuleAst", "missing required parser CustomRuleAstFunc"} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("generated adapter missing %q", want)
+		}
+	}
+	for _, want := range []string{"decodeRootRule(e, options.CustomRuleAst)", "func decodeRootRule(e nativeconfig.Expr, parse CustomRuleAstFunc)"} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("generated root dispatch missing %q", want)
 		}
 	}
 	if strings.Contains(src, "reflect.") {
@@ -71,7 +81,7 @@ import (
 )
 func main() {
 	parse := appconfig.ParseRule
-	input := []byte("config for generated version 1\n\npolicy {\n rule CustomerParser(4 > a && b <= 9)\n}\n")
+	input := []byte("config for generated version 1\n\nrule CustomerParser(4 > a && b <= 9)\n")
 	if _, _, err := appconfig.LoadBytes(context.Background(), input); err == nil { panic("missing parser accepted") }
 	var nilParse appconfig.CustomRuleAstFunc
 	if _, _, err := appconfig.LoadBytes(context.Background(), input, appconfig.WithCustomRuleAst(nilParse)); err == nil { panic("nil parser accepted") }
@@ -80,7 +90,7 @@ func main() {
 	if _, _, err := appconfig.LoadBytes(context.Background(), input, appconfig.WithCustomRuleAst(fail)); err == nil || strings.Contains(err.Error(), "secret expression") || strings.Contains(err.Error(), "4 > a") { panic(fmt.Sprintf("sensitive parser error leaked: %v", err)) }
 	cfg, _, err := appconfig.LoadBytes(context.Background(), input, appconfig.WithCustomRuleAst(parse))
 	if err != nil { panic(err) }
-	formatted, err := appconfig.FormatCustomRuleAst(cfg.Policy.Rule)
+	formatted, err := appconfig.FormatCustomRuleAst(cfg.Rule)
 	if err != nil || formatted != "4 > a && b <= 9" { panic(fmt.Sprintf("format = %q, %v", formatted, err)) }
 }
 `
