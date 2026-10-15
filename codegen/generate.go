@@ -155,6 +155,95 @@ func Validate(s m.Schema) error {
 				return fmt.Errorf("%s.%s: %w", sec.Name, f.Key, err)
 			}
 		}
+		if err := validateChildDefinitions(sec, sec.Name, typesSeen); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateChildDefinitions applies the same static constraints to every
+// nested generated struct. Type names are global to the generated package;
+// field and section identities are scoped to their immediate parent.
+func validateChildDefinitions(parent m.SectionDefinition, path string, typesSeen map[string]bool) error {
+	childNames := map[string]bool{}
+	memberNames := map[string]bool{}
+	if parent.Repeated {
+		memberNames["Name"] = true
+	}
+	for _, f := range parent.Fields {
+		if !f.InputOnly {
+			memberNames[f.GoName] = true
+		}
+	}
+	for _, child := range parent.Children {
+		childPath := path + "." + child.Name
+		if child.Name == "" || childNames[child.Name] {
+			return fmt.Errorf("duplicate or empty nested section %q", childPath)
+		}
+		childNames[child.Name] = true
+		if !exported(child.GoName) || memberNames[child.GoName] {
+			return fmt.Errorf("invalid or ambiguous nested field mapping %q", childPath)
+		}
+		memberNames[child.GoName] = true
+		if !exported(child.GoType) || typesSeen[child.GoType] {
+			return fmt.Errorf("invalid or ambiguous nested type %q", child.GoType)
+		}
+		typesSeen[child.GoType] = true
+		keys, fields := map[string]bool{}, map[string]bool{}
+		if child.Repeated {
+			fields["Name"] = true
+		}
+		for _, f := range child.Fields {
+			if f.InputOnly {
+				if f.Key == "" || keys[f.Key] || f.RuntimeOnly || f.Policy != m.Eager || f.GoName != "" || f.GoType != "" {
+					return fmt.Errorf("invalid input-only field %s.%s", childPath, f.Key)
+				}
+				keys[f.Key] = true
+				continue
+			}
+			if !exported(f.GoName) || fields[f.GoName] {
+				return fmt.Errorf("invalid or duplicate field mapping %s.%s", childPath, f.GoName)
+			}
+			fields[f.GoName] = true
+			if !f.RuntimeOnly {
+				if f.Key == "" || keys[f.Key] {
+					return fmt.Errorf("duplicate or empty config path %s.%s", childPath, f.Key)
+				}
+				keys[f.Key] = true
+			}
+			ti, err := ClassifyType(f.GoType)
+			if err != nil {
+				return err
+			}
+			if f.Default != nil {
+				if lit, ok := f.Default.(m.Literal); ok {
+					if err := ValidateTypeDefault(ti, lit.Value); err != nil {
+						return fmt.Errorf("%s.%s: %w", childPath, f.Key, err)
+					}
+				}
+			}
+			if f.Policy != m.Eager && f.Policy != m.ProviderBacked {
+				return fmt.Errorf("unsupported resolution policy")
+			}
+			if f.RuntimeOnly && (f.Default != nil || f.Environment != "" || f.Policy != m.Eager || f.Key != "") {
+				return fmt.Errorf("runtime-only field has persisted policy")
+			}
+			if _, err := expression(f.Default); err != nil {
+				return fmt.Errorf("%s.%s: %w", childPath, f.Key, err)
+			}
+			for _, ex := range f.Examples {
+				if ex == nil {
+					return fmt.Errorf("nil example for %s.%s", childPath, f.Key)
+				}
+				if _, err := expression(ex); err != nil {
+					return fmt.Errorf("invalid example for %s.%s: %w", childPath, f.Key, err)
+				}
+			}
+		}
+		if err := validateChildDefinitions(child, childPath, typesSeen); err != nil {
+			return err
+		}
 	}
 	return nil
 }

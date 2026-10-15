@@ -68,3 +68,37 @@ func main(){
 		t.Fatalf("generated recursive consumer failed: %v\n%s", err, out)
 	}
 }
+
+func TestValidateRejectsRecursiveSchemaCollisions(t *testing.T) {
+	base := m.Schema{Version: 1, Sections: []m.SectionDefinition{{
+		Name: "project", GoName: "Project", GoType: "ProjectConfig",
+		Fields:   []m.Field{{Key: "name", GoName: "Name", GoType: "string"}},
+		Children: []m.SectionDefinition{{Name: "build", GoName: "Build", GoType: "BuildConfig", Fields: []m.Field{{Key: "target", GoName: "Target", GoType: "string"}}}},
+	}}}
+	if err := codegen.Validate(base); err != nil {
+		t.Fatalf("valid nested schema rejected: %v", err)
+	}
+	cases := []m.Schema{
+		func() m.Schema {
+			s := base
+			s.Sections[0].Children = append(s.Sections[0].Children, m.SectionDefinition{Name: "build", GoName: "Other", GoType: "OtherConfig"})
+			return s
+		}(),
+		func() m.Schema { s := base; s.Sections[0].Children[0].GoName = "Name"; return s }(),
+		func() m.Schema {
+			s := base
+			s.Sections[0].Children = append(s.Sections[0].Children, m.SectionDefinition{Name: "other", GoName: "Other", GoType: "BuildConfig"})
+			return s
+		}(),
+		func() m.Schema {
+			s := base
+			s.Sections[0].Children[0].Fields = append(s.Sections[0].Children[0].Fields, m.Field{Key: "target", GoName: "Other", GoType: "string"})
+			return s
+		}(),
+	}
+	for i, s := range cases {
+		if err := codegen.Validate(s); err == nil {
+			t.Fatalf("recursive invalid schema %d accepted", i)
+		}
+	}
+}
