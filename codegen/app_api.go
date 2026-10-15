@@ -169,6 +169,19 @@ func Enrich(d *%s.Document) error {
 		return fmt.Errorf("configuration must be migrated to version %%d before enrichment", SchemaVersion)
 	}
 `, rtAlias)
+	for _, f := range s.RootFields {
+		if f.InputOnly || f.RuntimeOnly || f.Default == nil {
+			continue
+		}
+		ex, err := expressionWithPkg(f.Default, rtAlias)
+		if err != nil {
+			return err
+		}
+		p(`	if _, _, ok := d.Entry(%q); !ok {
+		d.Items = append(d.Items, %s.Entry{Key: %q, Value: %s, Defaulted: true})
+	}
+`, f.Key, rtAlias, f.Key, ex)
+	}
 
 	for _, sec := range s.Sections {
 		if sec.Repeated {
@@ -239,7 +252,15 @@ func Validate(d *%s.Document, strict bool) error {
 		p(`	if d.Identity != %q {
 		return &%s.ConfigError{Stage: %s.StageValidate, Source: d.HeaderSpan, Err: fmt.Errorf("expected config identity %%q, got %%q", %q, d.Identity)}
 	}
-`, configIdentity, rtAlias, rtAlias, configIdentity)
+	`, configIdentity, rtAlias, rtAlias, configIdentity)
+	}
+	for _, f := range s.RootFields {
+		if f.Required {
+			p(`	if e, _, ok := d.Entry(%q); !ok || e.Value == nil {
+		return &%s.ConfigError{Stage: %s.StageValidate, Path: %q, Err: fmt.Errorf("missing required root field")}
+	}
+`, f.Key, rtAlias, rtAlias, f.Key)
+		}
 	}
 
 	for _, sec := range s.Sections {
@@ -290,6 +311,22 @@ func Validate(d *%s.Document, strict bool) error {
 	}
 
 	p(`	if strict {
+		rootSeen := map[string]bool{}
+		for _, item := range d.Items {
+			entry, ok := item.(%s.Entry)
+			if !ok { continue }
+			if rootSeen[entry.Key] { return &%s.ConfigError{Stage: %s.StageBind, Path: entry.Key, Source: entry.Span, Err: fmt.Errorf("duplicate unresolved field")} }
+			rootSeen[entry.Key] = true
+			switch entry.Key {
+`, rtAlias, rtAlias, rtAlias)
+	for _, f := range s.RootFields {
+		if !f.RuntimeOnly {
+			p("\t\t\tcase %q:\n", f.Key)
+		}
+	}
+	p(`			default: return fmt.Errorf("unknown root field %%q", entry.Key)
+			}
+		}
 		for _, s := range d.Sections {
 			seen := map[string]bool{}
 			switch {
@@ -330,6 +367,12 @@ func Inspect(d *%s.Document) *%s.Document {
 		return nil
 	}
 	cloned := d.Clone()
+	for i, item := range cloned.Items {
+		if entry, ok := item.(%s.Entry); ok && IsSensitive("", entry.Key) {
+			entry.Value = %s.Literal{Value: "[REDACTED]"}
+			cloned.Items[i] = entry
+		}
+	}
 	for _, s := range cloned.Sections {
 		for i, item := range s.Items {
 			if entry, ok := item.(%s.Entry); ok {
@@ -350,7 +393,7 @@ func InspectString(d *%s.Document) string {
 	}
 	return %s.Format(Inspect(d))
 }
-`, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias)
+`, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias)
 
 	// FieldMeta and metadata queries
 	p(`// FieldMeta describes runtime schema metadata for a configuration field.
@@ -378,6 +421,26 @@ func Field(section, key string) (FieldMeta, bool) {
 	}
 	p(`	switch baseSection {
 `)
+	if len(s.RootFields) > 0 {
+		p(`	case "":
+		switch key {
+`)
+		for _, f := range s.RootFields {
+			p(`		case %q:
+			return FieldMeta{
+				Key: %q,
+				Section: "",
+				Required: %t,
+				Sensitive: %t,
+				InputOnly: %t,
+				Writable: %t,
+				Deprecated: %t,
+			}, true
+`, f.Key, f.Key, f.Required, f.Sensitive, f.InputOnly, !f.InputOnly && !f.RuntimeOnly, f.Deprecated)
+		}
+		p(`		}
+`)
+	}
 	for _, sec := range s.Sections {
 		p(`	case %q:
 		switch key {

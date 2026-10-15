@@ -37,6 +37,57 @@ func Validate(s m.Schema) error {
 		return fmt.Errorf("schema requires a positive version")
 	}
 	paths, names, typesSeen := map[string]bool{}, map[string]bool{}, map[string]bool{"Config": true}
+	rootKeys := map[string]bool{}
+	for _, f := range s.RootFields {
+		for _, e := range f.Examples {
+			if e == nil {
+				return fmt.Errorf("nil example for root.%s", f.Key)
+			}
+			if _, err := expression(e); err != nil {
+				return fmt.Errorf("invalid example for root.%s: %w", f.Key, err)
+			}
+			if _, err := m.ParseExpr(m.FormatExpr(e)); err != nil {
+				return fmt.Errorf("invalid example syntax for root.%s: %w", f.Key, err)
+			}
+		}
+		if f.InputOnly {
+			if f.Key == "" || rootKeys[f.Key] || f.RuntimeOnly || f.Policy != m.Eager || f.GoName != "" || f.GoType != "" {
+				return fmt.Errorf("invalid input-only root field %s", f.Key)
+			}
+			rootKeys[f.Key] = true
+			continue
+		}
+		if !exported(f.GoName) || names[f.GoName] {
+			return fmt.Errorf("invalid or duplicate root field mapping %s", f.GoName)
+		}
+		names[f.GoName] = true
+		if !f.RuntimeOnly {
+			if f.Key == "" || rootKeys[f.Key] {
+				return fmt.Errorf("duplicate or empty root config path %s", f.Key)
+			}
+			rootKeys[f.Key] = true
+		}
+		ti, err := ClassifyType(f.GoType)
+		if err != nil {
+			return err
+		}
+		if f.Default != nil {
+			if lit, ok := f.Default.(m.Literal); ok {
+				if err := ValidateTypeDefault(ti, lit.Value); err != nil {
+					return fmt.Errorf("root.%s: %w", f.Key, err)
+				}
+			}
+		}
+		if f.Policy != m.Eager && f.Policy != m.ProviderBacked {
+			return fmt.Errorf("unsupported resolution policy")
+		}
+		if f.RuntimeOnly && (f.Default != nil || f.Environment != "" || f.Policy != m.Eager || f.Key != "") {
+			return fmt.Errorf("runtime-only root field has persisted policy")
+		}
+		if _, err := expression(f.Default); err != nil {
+			return fmt.Errorf("root.%s: %w", f.Key, err)
+		}
+	}
 	for _, sec := range s.Sections {
 		if sec.Name == "" || paths[sec.Name] {
 			return fmt.Errorf("duplicate or empty section %q", sec.Name)
@@ -503,6 +554,9 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 		p("var _ = strings.Join\nvar _ = fmt.Errorf\nvar _ = errors.New\nvar _ = strconv.IntSize\n")
 	} else {
 		usesProvider := false
+		for _, f := range s.RootFields {
+			usesProvider = usesProvider || !f.InputOnly && f.Policy == m.ProviderBacked
+		}
 		for _, sec := range s.Sections {
 			for _, f := range sec.Fields {
 				usesProvider = usesProvider || !f.InputOnly && f.Policy == m.ProviderBacked
@@ -562,6 +616,15 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 		ti, _ := ClassifyType(f.GoType)
 		if v, ok := f.Default.(m.Literal); ok {
 			emitTypedDefaultValue(p, "c."+f.GoName, ti, strconv.Quote(v.Value), f.Key, f.Sensitive)
+		}
+		if f.Environment != "" {
+			p("if lookup!=nil{if v,ok:=lookup(%q);ok", f.Environment)
+			if f.EnvironmentNonEmpty {
+				p("&&v!=\"\"")
+			}
+			p("{")
+			emitTypedDefaultValueBody(p, "c."+f.GoName, ti, "v", f.Key, f.Sensitive)
+			p("}}\n")
 		}
 	}
 	for _, sec := range s.Sections {

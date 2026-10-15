@@ -126,6 +126,58 @@ func TestGeneratedValidationChecksIdentityAndStrictDuplicates(t *testing.T) {
 	}
 }
 
+func TestGeneratedRootFieldLifecycleUsesStandaloneRuntime(t *testing.T) {
+	s := m.Schema{
+		Identity: "example-schema",
+		Version:  1,
+		RootFields: []m.Field{
+			{Key: "name", GoName: "Name", GoType: "string", Default: m.Literal{Value: "default-name"}, Environment: "APP_NAME"},
+			{Key: "token", GoName: "Token", GoType: "string", Required: true, Sensitive: true},
+			{Key: "legacy", InputOnly: true, Deprecated: true},
+		},
+	}
+	runtime, err := codegen.GenerateRuntime(codegen.RuntimeOptions{Package: "nativeconfig", Capabilities: codegen.FullRuntimeCapabilities()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	generated, err := codegen.GenerateAppAPI(s, codegen.Options{Package: "appconfig", RuntimeImport: "example.test/root/nativeconfig"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.test/root\n\ngo 1.25.0\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.WriteToDir(filepath.Join(dir, "nativeconfig")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "appconfig"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "appconfig", "config_generated.go"), generated, 0644); err != nil {
+		t.Fatal(err)
+	}
+	const main = `package main
+import("context";"strings";"example.test/root/appconfig")
+func main(){
+ in:=[]byte("config for example version 1\n\ntoken secret\nlegacy old\n")
+ cfg,doc,err:=appconfig.LoadBytes(context.Background(),in,appconfig.WithStrict(true))
+ if err!=nil||cfg.Name!="default-name"||cfg.Token!="secret" { panic("root load failed") }
+ if !appconfig.IsSensitive("","token")||appconfig.IsWritable("","legacy") { panic("root metadata failed") }
+ if strings.Contains(appconfig.InspectString(doc),"secret") { panic("root secret leaked") }
+ if _,_,err:=appconfig.LoadBytes(context.Background(),[]byte("config for example version 1\nunknown value\ntoken x\n"),appconfig.WithStrict(true));err==nil { panic("unknown root accepted") }
+ if _,_,err:=appconfig.LoadBytes(context.Background(),[]byte("config for example version 1\ntoken x\ntoken y\n"),appconfig.WithStrict(true));err==nil { panic("duplicate root accepted") }
+}`
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(main), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("go", "run", ".")
+	cmd.Dir = dir
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("generated root module failed: %v\n%s", err, output)
+	}
+}
+
 func TestGenerateAppAPICompilationAndRuntime(t *testing.T) {
 	s := sampleSchema()
 
