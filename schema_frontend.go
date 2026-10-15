@@ -473,6 +473,36 @@ func FormatSchema(identity string, s *Schema) string {
 
 	fmt.Fprintf(&b, "config for %s version 1\n\n", identity)
 	fmt.Fprintf(&b, "version %d\n\n", s.Version)
+	if len(s.RootFields) > 0 {
+		b.WriteString("section root\n")
+		for _, f := range s.RootFields {
+			b.WriteString("\n")
+			fmt.Fprintf(&b, "    section field %s %s\n", f.Key, f.GoType)
+			if f.GoName != "" && f.GoName != exportIdentifier(f.Key) {
+				fmt.Fprintf(&b, "        go_name %s\n", f.GoName)
+			}
+			if f.Default != nil {
+				fmt.Fprintf(&b, "        default %s\n", FormatExpr(f.Default))
+			}
+			if f.Required {
+				b.WriteString("        required true\n")
+			}
+			if f.Sensitive {
+				b.WriteString("        sensitive true\n")
+			}
+			if f.RuntimeOnly {
+				b.WriteString("        runtime_only true\n")
+			}
+			if f.InputOnly {
+				b.WriteString("        input_only true\n")
+			}
+			if f.Deprecated {
+				b.WriteString("        deprecated true\n")
+			}
+			b.WriteString("    end\n")
+		}
+		b.WriteString("end\n\n")
+	}
 
 	for _, sec := range s.Sections {
 		fmt.Fprintf(&b, "section %s\n", sec.Name)

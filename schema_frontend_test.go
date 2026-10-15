@@ -147,6 +147,11 @@ end
 	if len(s.RootFields) != 1 || s.RootFields[0].Key != "name" || !s.RootFields[0].Required {
 		t.Fatalf("root fields = %#v", s.RootFields)
 	}
+	formatted := gogenconf.FormatSchema("example", s)
+	roundTrip, err := gogenconf.ParseSchema(strings.NewReader(formatted))
+	if err != nil || len(roundTrip.RootFields) != 1 || roundTrip.RootFields[0].Key != "name" {
+		t.Fatalf("root schema round trip failed: %#v, %v", roundTrip, err)
+	}
 	generated, err := codegen.GenerateAppAPI(*s, codegen.Options{Package: "appconfig", LibraryImport: "github.com/arran4/gogenconf"})
 	if err != nil {
 		t.Fatal(err)
