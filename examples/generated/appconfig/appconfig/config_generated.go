@@ -441,6 +441,21 @@ func Validate(d *nativeconfig.Document, strict bool) error {
 		}
 	}
 	if strict {
+		rootSeen := map[string]bool{}
+		for _, item := range d.Items {
+			entry, ok := item.(nativeconfig.Entry)
+			if !ok {
+				continue
+			}
+			if rootSeen[entry.Key] {
+				return &nativeconfig.ConfigError{Stage: nativeconfig.StageBind, Path: entry.Key, Source: entry.Span, Err: fmt.Errorf("duplicate unresolved field")}
+			}
+			rootSeen[entry.Key] = true
+			switch entry.Key {
+			default:
+				return fmt.Errorf("unknown root field %q", entry.Key)
+			}
+		}
 		for _, s := range d.Sections {
 			seen := map[string]bool{}
 			switch {
@@ -471,6 +486,12 @@ func Inspect(d *nativeconfig.Document) *nativeconfig.Document {
 		return nil
 	}
 	cloned := d.Clone()
+	for i, item := range cloned.Items {
+		if entry, ok := item.(nativeconfig.Entry); ok && IsSensitive("", entry.Key) {
+			entry.Value = nativeconfig.Literal{Value: "[REDACTED]"}
+			cloned.Items[i] = entry
+		}
+	}
 	for _, s := range cloned.Sections {
 		for i, item := range s.Items {
 			if entry, ok := item.(nativeconfig.Entry); ok {

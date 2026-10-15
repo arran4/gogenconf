@@ -35,7 +35,13 @@ type LookupEnv func(string) (string, bool)
 // BindingValue encodes precedence explicitly: authored document, compatibility
 // environment, schema default. Enriched defaults retain transient provenance.
 func BindingValue(d *Document, section, key string, fallback Expr, env string, nonempty bool, lookup LookupEnv) Expr {
-	entry, _, present := d.Section(section).Entry(key)
+	var entry Entry
+	var present bool
+	if section == "" {
+		entry, _, present = d.Entry(key)
+	} else {
+		entry, _, present = d.Section(section).Entry(key)
+	}
 	if present && entry.Value != nil && !entry.Defaulted {
 		return entry.Value
 	}
