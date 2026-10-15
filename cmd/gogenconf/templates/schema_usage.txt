@@ -3,10 +3,12 @@ Usage: gogenconf schema <subcommand>
 
 Subcommands:
 {{if .Recursive}}
+    schema doc                               Generate Markdown and man documentation from a schema
     schema list                              Inspect schema sections, fields, and types
     schema plan                              Inspect the generation plan without writing files
     schema validate                          Validate declarative schema syntax and generator constraints
 {{else}}
+    doc        Generate Markdown and man documentation from a schema
     list       Inspect schema sections, fields, and types
     plan       Inspect the generation plan without writing files
     validate   Validate declarative schema syntax and generator constraints

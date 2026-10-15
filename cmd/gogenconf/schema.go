@@ -109,6 +109,12 @@ func (c *RootCmd) NewSchema() *Schema {
 	set.Usage = v.Usage
 
 	{
+		subCmd := NewLazyCommand(func() Cmd { return v.NewSchemaDoc() })
+		v.SubCommands["doc"] = subCmd
+
+	}
+
+	{
 		subCmd := NewLazyCommand(func() Cmd { return v.NewSchemaList() })
 		v.SubCommands["list"] = subCmd
 
