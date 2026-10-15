@@ -686,6 +686,8 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 		for _, parser := range parsers {
 			p("// %sFunc parses the bounded canonical expression for schema parser %q.\n", parser.Symbol, parser.Name)
 			p("type %sFunc func(raw string,span %s.Span)(%s,error)\n", parser.Symbol, rtAlias, parser.GoType)
+			p("// %sFormatter is the explicit inverse contract for values accepted by %sFunc.\n", parser.Symbol, parser.Symbol)
+			p("type %sFormatter interface{FormatConfig()(string,error)}\nfunc Format%s(value %s)(string,error){formatter,ok:=any(value).(%sFormatter);if !ok{return \"\",fmt.Errorf(%q)};raw,err:=formatter.FormatConfig();if err!=nil{return \"\",fmt.Errorf(%q,err)};if len(raw)>65536{return \"\",fmt.Errorf(\"formatted custom expression exceeds 65536 bytes\")};return raw,nil}\n", parser.Symbol, parser.Symbol, parser.GoType, parser.Symbol, "value does not implement "+parser.Symbol+"Formatter", "format parser "+parser.Name+": %w")
 		}
 		p("type decoderOptions struct{\n")
 		for _, parser := range parsers {

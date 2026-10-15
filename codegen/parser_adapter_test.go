@@ -22,7 +22,7 @@ func TestGeneratedNamedParserAdapter(t *testing.T) {
 		t.Fatal(err)
 	}
 	src := string(generated)
-	for _, want := range []string{"type CustomRuleAstFunc func", "func WithCustomRuleAst", "missing required parser CustomRuleAstFunc"} {
+	for _, want := range []string{"type CustomRuleAstFunc func", "func WithCustomRuleAst", "func FormatCustomRuleAst", "missing required parser CustomRuleAstFunc"} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("generated adapter missing %q", want)
 		}
@@ -50,9 +50,13 @@ func TestGeneratedNamedParserAdapter(t *testing.T) {
 	}
 	const extension = `package appconfig
 
+import "example.test/generated/nativeconfig"
+
 type RuleExpression interface { Text() string }
 type rule string
 func (r rule) Text() string { return string(r) }
+func (r rule) FormatConfig() (string, error) { return string(r), nil }
+func ParseRule(raw string, span nativeconfig.Span) (RuleExpression, error) { return rule(raw), nil }
 `
 	if err := os.WriteFile(filepath.Join(app, "rule.go"), []byte(extension), 0644); err != nil {
 		t.Fatal(err)
@@ -62,20 +66,18 @@ import (
  "context"
  "fmt"
  "example.test/generated/appconfig"
- "example.test/generated/nativeconfig"
 )
 func main() {
- parse := func(raw string, span nativeconfig.Span) (appconfig.RuleExpression, error) {
-  if raw != "4 > a && b <= 9" || span.Line == 0 { return nil, fmt.Errorf("unexpected parser input %q", raw) }
-  return nil, nil
- }
+	parse := appconfig.ParseRule
 	input := []byte("config for generated version 1\n\npolicy {\n rule CustomerParser(4 > a && b <= 9)\n}\n")
 	if _, _, err := appconfig.LoadBytes(context.Background(), input); err == nil { panic("missing parser accepted") }
 	var nilParse appconfig.CustomRuleAstFunc
 	if _, _, err := appconfig.LoadBytes(context.Background(), input, appconfig.WithCustomRuleAst(nilParse)); err == nil { panic("nil parser accepted") }
 	if _, _, err := appconfig.LoadBytes(context.Background(), input, appconfig.WithCustomRuleAst(parse), appconfig.WithCustomRuleAst(parse)); err == nil { panic("duplicate parser accepted") }
-	_, _, err := appconfig.LoadBytes(context.Background(), input, appconfig.WithCustomRuleAst(parse))
+	cfg, _, err := appconfig.LoadBytes(context.Background(), input, appconfig.WithCustomRuleAst(parse))
 	if err != nil { panic(err) }
+	formatted, err := appconfig.FormatCustomRuleAst(cfg.Policy.Rule)
+	if err != nil || formatted != "4 > a && b <= 9" { panic(fmt.Sprintf("format = %q, %v", formatted, err)) }
 }
 `
 	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(main), 0644); err != nil {
