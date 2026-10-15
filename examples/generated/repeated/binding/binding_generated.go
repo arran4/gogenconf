@@ -123,6 +123,36 @@ func Resolve(ctx context.Context, d *gogenconf.Document, r *gogenconf.Registry, 
 		}
 		c.Workers = append(c.Workers, v)
 	}
+	if group := d.Section("worker"); group != nil {
+		for _, section := range group.Sections {
+			var v runtimeconfig.WorkerConfig
+			v.Name = section.Name
+			{
+				e := gogenconf.SectionBindingValue(section, "label", nil, "", false, lookup)
+				if e == nil {
+					return runtimeconfig.Config{}, fmt.Errorf("missing required field worker.label")
+				}
+				if e != nil {
+					decoded, err := decodeWorkersLabel(ctx, r, e)
+					if err != nil {
+						return runtimeconfig.Config{}, err
+					}
+					v.Label = decoded
+				}
+			}
+			if s, ok := any(&v).(interface{ SanitizeConfig() error }); ok {
+				if err := s.SanitizeConfig(); err != nil {
+					return runtimeconfig.Config{}, fmt.Errorf("sanitize %s: %w", "worker", err)
+				}
+			}
+			if v, ok := any(&v).(interface{ ValidateConfig() error }); ok {
+				if err := v.ValidateConfig(); err != nil {
+					return runtimeconfig.Config{}, fmt.Errorf("validate %s: %w", "worker", err)
+				}
+			}
+			c.Workers = append(c.Workers, v)
+		}
+	}
 	if s, ok := any(&c).(interface{ SanitizeConfig() error }); ok {
 		if err := s.SanitizeConfig(); err != nil {
 			return runtimeconfig.Config{}, fmt.Errorf("sanitize config: %w", err)

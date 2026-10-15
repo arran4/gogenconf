@@ -239,6 +239,33 @@ func Resolve(ctx context.Context, d *nativeconfig.Document, r *nativeconfig.Regi
 		}
 		c.Workers = append(c.Workers, v)
 	}
+	if group := d.Section("worker"); group != nil {
+		for _, section := range group.Sections {
+			var v WorkerConfig
+			v.Name = section.Name
+			{
+				e := nativeconfig.SectionBindingValue(section, "concurrency", nativeconfig.Literal{Value: "4"}, "", false, lookup)
+				if e != nil {
+					decoded, err := decodeWorkersConcurrency(ctx, r, e)
+					if err != nil {
+						return Config{}, err
+					}
+					v.Concurrency = decoded
+				}
+			}
+			if s, ok := any(&v).(interface{ SanitizeConfig() error }); ok {
+				if err := s.SanitizeConfig(); err != nil {
+					return Config{}, fmt.Errorf("sanitize %s: %w", "worker", err)
+				}
+			}
+			if v, ok := any(&v).(interface{ ValidateConfig() error }); ok {
+				if err := v.ValidateConfig(); err != nil {
+					return Config{}, fmt.Errorf("validate %s: %w", "worker", err)
+				}
+			}
+			c.Workers = append(c.Workers, v)
+		}
+	}
 	if s, ok := any(&c).(interface{ SanitizeConfig() error }); ok {
 		if err := s.SanitizeConfig(); err != nil {
 			return Config{}, fmt.Errorf("sanitize config: %w", err)

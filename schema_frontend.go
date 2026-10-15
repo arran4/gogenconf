@@ -172,15 +172,50 @@ func parseSectionDefinition(sec *Section) (SectionDefinition, error) {
 				}
 			}
 		case *Section:
-			field, err := parseFieldDefinition(v)
-			if err != nil {
-				return secDef, err
+			// A field declaration carries a type in its section name (normally
+			// `field <key> <type>`). A one-component child is a recursive
+			// schema object and is deliberately kept structural rather than
+			// flattened into a synthetic dotted field key.
+			if isFieldDefinitionSection(v) {
+				field, err := parseFieldDefinition(v)
+				if err != nil {
+					return secDef, err
+				}
+				secDef.Fields = append(secDef.Fields, field)
+			} else {
+				child, err := parseSectionDefinition(v)
+				if err != nil {
+					return secDef, err
+				}
+				secDef.Children = append(secDef.Children, child)
 			}
-			secDef.Fields = append(secDef.Fields, field)
 		}
 	}
 
 	return secDef, nil
+}
+
+func isFieldDefinitionSection(sec *Section) bool {
+	if strings.HasPrefix(sec.Name, "field ") || len(strings.Fields(sec.Name)) >= 2 {
+		return true
+	}
+	// Brace field syntax is represented as `key { type { metadata } }` or
+	// `key { go_type T; metadata }` by the canonical parser. A structural
+	// child, in contrast, owns field/child sections of its own.
+	if len(sec.Sections) == 1 && isValidGoType(sec.Sections[0].Name) && len(sec.Sections[0].Sections) == 0 {
+		return true
+	}
+	if len(sec.Sections) == 0 {
+		for _, item := range sec.Items {
+			if entry, ok := item.(Entry); ok {
+				switch entry.Key {
+				case "go_type", "type", "default", "required", "sensitive", "runtime_only", "input_only", "deprecated", "policy", "env", "env_non_empty", "example":
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func parseFieldDefinition(sec *Section) (Field, error) {
@@ -567,10 +602,74 @@ func FormatSchema(identity string, s *Schema) string {
 			}
 			b.WriteString("    end\n")
 		}
+		for _, child := range sec.Children {
+			b.WriteString("\n")
+			formatSchemaSection(&b, child, "    ")
+		}
 		b.WriteString("end\n\n")
 	}
 
 	return b.String()
+}
+
+// formatSchemaSection emits one recursively nested schema section.  Keeping
+// indentation here, rather than encoding a dotted path, mirrors the native
+// document tree that generated decoders bind against.
+func formatSchemaSection(b *strings.Builder, sec SectionDefinition, indent string) {
+	fmt.Fprintf(b, "%ssection %s\n", indent, sec.Name)
+	inner := indent + "    "
+	if sec.GoName != "" && sec.GoName != exportIdentifier(sec.Name) {
+		fmt.Fprintf(b, "%sgo_name %s\n", inner, sec.GoName)
+	}
+	if sec.GoType != "" && sec.GoType != exportIdentifier(sec.Name)+"Config" {
+		fmt.Fprintf(b, "%sgo_type %s\n", inner, sec.GoType)
+	}
+	if sec.Repeated {
+		fmt.Fprintf(b, "%srepeated true\n", inner)
+	}
+	for _, doc := range sec.Documentation {
+		fmt.Fprintf(b, "%s## %s\n", inner, doc)
+	}
+	for _, f := range sec.Fields {
+		fmt.Fprintf(b, "\n%ssection field %s %s\n", inner, f.Key, f.GoType)
+		fieldIndent := inner + "    "
+		if f.GoName != "" && f.GoName != exportIdentifier(f.Key) {
+			fmt.Fprintf(b, "%sgo_name %s\n", fieldIndent, f.GoName)
+		}
+		if f.Default != nil {
+			fmt.Fprintf(b, "%sdefault %s\n", fieldIndent, FormatExpr(f.Default))
+		}
+		if f.Required {
+			fmt.Fprintf(b, "%srequired true\n", fieldIndent)
+		}
+		if f.Sensitive {
+			fmt.Fprintf(b, "%ssensitive true\n", fieldIndent)
+		}
+		if f.RuntimeOnly {
+			fmt.Fprintf(b, "%sruntime_only true\n", fieldIndent)
+		}
+		if f.InputOnly {
+			fmt.Fprintf(b, "%sinput_only true\n", fieldIndent)
+		}
+		if f.Deprecated {
+			fmt.Fprintf(b, "%sdeprecated true\n", fieldIndent)
+		}
+		if f.Policy != "" {
+			fmt.Fprintf(b, "%spolicy %s\n", fieldIndent, f.Policy)
+		}
+		if f.Environment != "" {
+			fmt.Fprintf(b, "%senv %s\n", fieldIndent, f.Environment)
+		}
+		if f.EnvironmentNonEmpty {
+			fmt.Fprintf(b, "%senv_non_empty true\n", fieldIndent)
+		}
+		fmt.Fprintf(b, "%send\n", inner)
+	}
+	for _, child := range sec.Children {
+		b.WriteString("\n")
+		formatSchemaSection(b, child, inner)
+	}
+	fmt.Fprintf(b, "%send\n", indent)
 }
 
 func isValidGoType(t string) bool {

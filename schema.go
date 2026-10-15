@@ -106,6 +106,10 @@ type SectionDefinition struct {
 	Name, GoName, GoType string
 	Documentation        []string
 	Fields               []Field
+	// Children describes schema-defined nested native objects.  It is a
+	// recursive structural declaration, not a flattened dotted path: each
+	// child is bound against the corresponding Document.Section subtree.
+	Children []SectionDefinition
 	// Repeated sections use "Name instance", generating a slice and Name field.
 	Repeated bool
 	// ExampleNames illustrate repeated sections without creating runtime defaults.

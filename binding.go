@@ -17,6 +17,18 @@ func BindingValue(d *Document, section, key string, fallback Expr, env string, n
 	} else {
 		entry, _, present = d.Section(section).Entry(key)
 	}
+	return bindingEntryValue(entry, present, fallback, env, nonempty, lookup)
+}
+
+// SectionBindingValue applies the same authored/environment/default precedence
+// inside a nested native object. Generated static decoders use this narrow
+// helper rather than flattening recursive document paths.
+func SectionBindingValue(s *Section, key string, fallback Expr, env string, nonempty bool, lookup LookupEnv) Expr {
+	entry, _, present := s.Entry(key)
+	return bindingEntryValue(entry, present, fallback, env, nonempty, lookup)
+}
+
+func bindingEntryValue(entry Entry, present bool, fallback Expr, env string, nonempty bool, lookup LookupEnv) Expr {
 	if present && entry.Value != nil && !entry.Defaulted {
 		return entry.Value
 	}

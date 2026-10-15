@@ -587,21 +587,7 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 		}
 		p("}\n")
 		for _, sec := range s.Sections {
-			p("type %s struct {\n", sec.GoType)
-			if sec.Repeated {
-				p("Name string\n")
-			}
-			for _, f := range sec.Fields {
-				if f.InputOnly {
-					continue
-				}
-				typ := f.ResolvedGoType()
-				if f.Policy == m.ProviderBacked {
-					typ = rtAlias + ".Provider[" + typ + "]"
-				}
-				p("%s %s\n", f.GoName, typ)
-			}
-			p("}\n")
+			emitModelSection(p, sec, rtAlias)
 		}
 	}
 	if !binder {
@@ -664,15 +650,8 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 		emitStaticDecoder(p, staticDecoderName("Root", f.GoName), f.ResolvedGoType(), ti, rtAlias, f.Key, f.Sensitive)
 	}
 	for _, sec := range s.Sections {
-		for _, f := range sec.Fields {
-			if f.InputOnly || f.RuntimeOnly || f.Policy == m.ProviderBacked {
-				continue
-			}
-			ti, err := ClassifyType(f.GoType)
-			if err != nil {
-				return nil, err
-			}
-			emitStaticDecoder(p, staticDecoderName(sec.GoName, f.GoName), f.ResolvedGoType(), ti, rtAlias, sec.Name+"."+f.Key, f.Sensitive)
+		if err := emitSectionStaticDecoders(p, sec, sec.GoName, sec.Name, rtAlias); err != nil {
+			return nil, err
 		}
 	}
 	p("// Resolve constructs ordinary Go fields; provider policy alone defers resolution.\nfunc Resolve(ctx context.Context,d *%s.Document,r *%s.Registry,lookup %s.LookupEnv)(%sConfig,error){\nvar c %sConfig\nif d==nil{return c,fmt.Errorf(\"nil document\")}\nif d.Version>%d{return c,fmt.Errorf(\"unsupported future configuration version\")}\n", rtAlias, rtAlias, rtAlias, qual, qual, s.Version)
@@ -728,10 +707,26 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 			}
 			p("}}\n")
 		}
+		parent := fmt.Sprintf("d.Section(%q)", sec.Name)
+		if sec.Repeated {
+			parent = "section"
+		}
+		if err := emitNestedSectionResolve(p, sec, parent, dest, sec.GoName, sec.Name, qual, rtAlias); err != nil {
+			return nil, err
+		}
 		p("if s,ok:=any(&%s).(interface{SanitizeConfig()error});ok{if err:=s.SanitizeConfig();err!=nil{return %sConfig{},fmt.Errorf(\"sanitize %%s: %%w\", %q, err)}}\n", dest, qual, sec.Name)
 		p("if v,ok:=any(&%s).(interface{ValidateConfig()error});ok{if err:=v.ValidateConfig();err!=nil{return %sConfig{},fmt.Errorf(\"validate %%s: %%w\", %q, err)}}\n", dest, qual, sec.Name)
 		if sec.Repeated {
 			p("c.%s=append(c.%s,v)}\n", sec.GoName, sec.GoName)
+			// Brace syntax represents `project lxa {}` as a structural
+			// container named project with a child named lxa. Keep legacy
+			// `section project lxa` support above, then bind canonical named
+			// children without flattening their identity into a string key.
+			p("if group:=d.Section(%q);group!=nil{for _,section:=range group.Sections{var v %s%s;v.Name=section.Name\n", sec.Name, qual, sec.GoType)
+			if err := emitSectionValueResolve(p, sec, "section", "v", sec.GoName, sec.Name, qual, rtAlias); err != nil {
+				return nil, err
+			}
+			p("c.%s=append(c.%s,v)}}\n", sec.GoName, sec.GoName)
 		}
 	}
 	p("if s,ok:=any(&c).(interface{SanitizeConfig()error});ok{if err:=s.SanitizeConfig();err!=nil{return %sConfig{},fmt.Errorf(\"sanitize config: %%w\", err)}}\n", qual)
@@ -743,4 +738,105 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 		}
 	}
 	return format.Source(b.Bytes())
+}
+
+func emitModelSection(p func(string, ...any), sec m.SectionDefinition, rtAlias string) {
+	p("type %s struct {\n", sec.GoType)
+	if sec.Repeated {
+		p("Name string\n")
+	}
+	for _, f := range sec.Fields {
+		if f.InputOnly {
+			continue
+		}
+		typ := f.ResolvedGoType()
+		if f.Policy == m.ProviderBacked {
+			typ = rtAlias + ".Provider[" + typ + "]"
+		}
+		p("%s %s\n", f.GoName, typ)
+	}
+	for _, child := range sec.Children {
+		typ := child.GoType
+		if child.Repeated {
+			typ = "[]" + typ
+		}
+		p("%s %s\n", child.GoName, typ)
+	}
+	p("}\n")
+	for _, child := range sec.Children {
+		emitModelSection(p, child, rtAlias)
+	}
+}
+
+func emitSectionStaticDecoders(p func(string, ...any), sec m.SectionDefinition, prefix, path, rtAlias string) error {
+	for _, f := range sec.Fields {
+		if f.InputOnly || f.RuntimeOnly || f.Policy == m.ProviderBacked {
+			continue
+		}
+		ti, err := ClassifyType(f.GoType)
+		if err != nil {
+			return err
+		}
+		emitStaticDecoder(p, staticDecoderName(prefix, f.GoName), f.ResolvedGoType(), ti, rtAlias, path+"."+f.Key, f.Sensitive)
+	}
+	for _, child := range sec.Children {
+		if err := emitSectionStaticDecoders(p, child, prefix+child.GoName, path+"."+child.Name, rtAlias); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// emitNestedSectionResolve emits direct binding for schema-defined child
+// objects. It deliberately walks Document.Section pointers, preserving the
+// native object tree instead of manufacturing flattened keys or reflection
+// metadata at runtime.
+func emitNestedSectionResolve(p func(string, ...any), parent m.SectionDefinition, parentExpr, dest, prefix, path, qual, rtAlias string) error {
+	for _, child := range parent.Children {
+		childVar := "nested" + prefix + child.GoName
+		childDest := dest + "." + child.GoName
+		if child.Repeated {
+			p("if %s!=nil{for _,%s:=range %s.Sections{if !strings.HasPrefix(%s.Name,%q){continue};var value %s%s;value.Name=strings.TrimPrefix(%s.Name,%q)\n", parentExpr, childVar, parentExpr, childVar, child.Name+" ", qual, child.GoType, childVar, child.Name+" ")
+			if err := emitSectionValueResolve(p, child, childVar, "value", prefix+child.GoName, path+"."+child.Name, qual, rtAlias); err != nil {
+				return err
+			}
+			p("%s=append(%s,value)}}\n", childDest, childDest)
+			continue
+		}
+		p("if %s!=nil{if %s:=%s.Section(%q);%s!=nil{var value %s%s\n", parentExpr, childVar, parentExpr, child.Name, childVar, qual, child.GoType)
+		if err := emitSectionValueResolve(p, child, childVar, "value", prefix+child.GoName, path+"."+child.Name, qual, rtAlias); err != nil {
+			return err
+		}
+		p("%s=value}}\n", childDest)
+	}
+	return nil
+}
+
+func emitSectionValueResolve(p func(string, ...any), sec m.SectionDefinition, sectionVar, dest, prefix, path, qual, rtAlias string) error {
+	for _, f := range sec.Fields {
+		if f.InputOnly || f.RuntimeOnly {
+			continue
+		}
+		ex, err := expressionWithPkg(f.Default, rtAlias)
+		if err != nil {
+			return err
+		}
+		p("{e:=%s.SectionBindingValue(%s,%q,%s,%q,%t,lookup)\n", rtAlias, sectionVar, f.Key, ex, f.Environment, f.EnvironmentNonEmpty)
+		if f.Required {
+			p("if e==nil{return %sConfig{},fmt.Errorf(%q)}\n", qual, "missing required field "+path+"."+f.Key)
+		}
+		p("if e!=nil{")
+		if f.Policy == m.ProviderBacked {
+			p("%s.%s=%s.FieldProvider[%s](r,e,%q,%t)\n", dest, f.GoName, rtAlias, f.ResolvedGoType(), path+"."+f.Key, f.Sensitive)
+		} else {
+			p("decoded,err:=decode%s%s(ctx,r,e);if err!=nil{return %sConfig{},err};%s.%s=decoded\n", prefix, f.GoName, qual, dest, f.GoName)
+		}
+		p("}}\n")
+	}
+	if err := emitNestedSectionResolve(p, sec, sectionVar, dest, prefix, path, qual, rtAlias); err != nil {
+		return err
+	}
+	p("if s,ok:=any(&%s).(interface{SanitizeConfig()error});ok{if err:=s.SanitizeConfig();err!=nil{return %sConfig{},fmt.Errorf(\"sanitize %%s: %%w\",%q,err)}}\n", dest, qual, path)
+	p("if v,ok:=any(&%s).(interface{ValidateConfig()error});ok{if err:=v.ValidateConfig();err!=nil{return %sConfig{},fmt.Errorf(\"validate %%s: %%w\",%q,err)}}\n", dest, qual, path)
+	return nil
 }

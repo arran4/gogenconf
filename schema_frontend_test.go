@@ -163,6 +163,44 @@ end
 	}
 }
 
+func TestParseSchemaRecursiveSections(t *testing.T) {
+	s, err := gogenconf.ParseSchema(strings.NewReader(`config for go2gentoo-schema version 1
+
+version 1
+
+section project
+    repeated true
+    go_type ProjectConfig
+    section field module_path string
+    end
+    section build
+        go_type BuildConfig
+        section field target string
+            required true
+        end
+        section field enabled bool
+            default true
+        end
+    end
+end
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Sections) != 1 || len(s.Sections[0].Children) != 1 {
+		t.Fatalf("recursive schema tree = %#v", s)
+	}
+	project, build := s.Sections[0], s.Sections[0].Children[0]
+	if !project.Repeated || project.Name != "project" || build.Name != "build" || build.GoType != "BuildConfig" || len(build.Fields) != 2 || !build.Fields[0].Required {
+		t.Fatalf("recursive schema definitions = %#v / %#v", project, build)
+	}
+	formatted := gogenconf.FormatSchema("go2gentoo", s)
+	roundTrip, err := gogenconf.ParseSchema(strings.NewReader(formatted))
+	if err != nil || len(roundTrip.Sections) != 1 || len(roundTrip.Sections[0].Children) != 1 || roundTrip.Sections[0].Children[0].Fields[0].Key != "target" {
+		t.Fatalf("recursive schema format round trip failed: %#v, %v\n%s", roundTrip, err, formatted)
+	}
+}
+
 func TestSchemaFrontendCodeGeneration(t *testing.T) {
 	input := `config for myapp-schema version 1
 
