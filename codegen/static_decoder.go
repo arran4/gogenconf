@@ -14,15 +14,23 @@ func staticDecoderName(section, field string) string {
 func emitStaticDecoder(p func(string, ...any), fn, goType string, ti TypeInfo, rtAlias, path string, sensitive bool) {
 	if ti.IsMap {
 		elemInfo := ti
-		elemInfo.GoType, elemInfo.IsSlice, elemInfo.IsMap = ti.ElemType, false, false
-		emitStaticScalarDecoder(p, fn+"Element", ti.ElemType, elemInfo, rtAlias, path, sensitive)
+		if ti.Element != nil {
+			elemInfo = *ti.Element
+		} else {
+			elemInfo.GoType, elemInfo.IsSlice, elemInfo.IsMap = ti.ElemType, false, false
+		}
+		emitStaticDecoder(p, fn+"Element", ti.ElemType, elemInfo, rtAlias, path, sensitive)
 		p("func %s(ctx context.Context,r *%s.Registry,e %s.Expr)(%s,error){var out %s;switch v:=e.(type){case %s.Map:out=make(%s,len(v.Entries));for _,entry:=range v.Entries{value,err:=%sElement(ctx,r,entry.Value);if err!=nil{return out,err};out[entry.Key]=value};return out,nil;case *%s.Map:if v==nil{return out,decodeValueError(%q,%t,%s.SpanOf(e),fmt.Errorf(\"nil map\"))};return %s(ctx,r,*v);default:return out,decodeValueError(%q,%t,%s.SpanOf(e),fmt.Errorf(\"expected keyed collection, got %%T\",e))}}\n", fn, rtAlias, rtAlias, goType, goType, rtAlias, goType, fn, rtAlias, path, sensitive, rtAlias, fn, path, sensitive, rtAlias)
 		return
 	}
 	if ti.IsSlice {
 		elemInfo := ti
-		elemInfo.GoType, elemInfo.IsSlice, elemInfo.IsMap = ti.ElemType, false, false
-		emitStaticScalarDecoder(p, fn+"Element", ti.ElemType, elemInfo, rtAlias, path, sensitive)
+		if ti.Element != nil {
+			elemInfo = *ti.Element
+		} else {
+			elemInfo.GoType, elemInfo.IsSlice, elemInfo.IsMap = ti.ElemType, false, false
+		}
+		emitStaticDecoder(p, fn+"Element", ti.ElemType, elemInfo, rtAlias, path, sensitive)
 		p("func %s(ctx context.Context,r *%s.Registry,e %s.Expr)(%s,error){var out %s;switch v:=e.(type){case %s.List:out=make(%s,0,len(v.Items));for _,item:=range v.Items{value,err:=%sElement(ctx,r,item);if err!=nil{return out,err};out=append(out,value)};return out,nil;case *%s.List:if v==nil{return out,decodeValueError(%q,%t,%s.SpanOf(e),fmt.Errorf(\"nil list\"))};return %s(ctx,r,*v);default:raw,err:=%s.ResolveField[string](ctx,r,e,%q,%t);if err!=nil{return out,err};items:=strings.Split(raw,\",\");out=make(%s,0,len(items));for _,item:=range items{value,err:=%sElement(ctx,r,%s.Literal{Value:item,Span:%s.SpanOf(e)});if err!=nil{return out,err};out=append(out,value)};return out,nil}}\n", fn, rtAlias, rtAlias, goType, goType, rtAlias, goType, fn, rtAlias, path, sensitive, rtAlias, fn, rtAlias, path, sensitive, goType, fn, rtAlias, rtAlias)
 		return
 	}

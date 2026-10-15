@@ -42,6 +42,8 @@ func TestClassifyType(t *testing.T) {
 		{typeStr: "[]int", wantKind: codegen.TypeKindInt, wantSlice: true},
 		{typeStr: "[$]int", wantKind: codegen.TypeKindInt, wantMap: true},
 		{typeStr: "map[string]int", wantKind: codegen.TypeKindInt, wantMap: true},
+		{typeStr: "map[string][]string", wantKind: codegen.TypeKindString, wantMap: true},
+		{typeStr: "[]map[string]int", wantKind: codegen.TypeKindInt, wantSlice: true},
 		{typeStr: "[]time.Duration", wantKind: codegen.TypeKindDuration, wantSlice: true},
 		{typeStr: "*int", wantKind: codegen.TypeKindInt, wantPtr: true},
 		{typeStr: "*string", wantKind: codegen.TypeKindString, wantPtr: true},
@@ -159,6 +161,7 @@ func TestStandaloneModuleTypesAndLifecycle(t *testing.T) {
 					{Key: "tags", GoName: "Tags", GoType: "[]string", Default: m.Literal{Value: "web,api"}},
 					{Key: "allowed_ports", GoName: "AllowedPorts", GoType: "[]int", Default: m.Literal{Value: "80,443"}},
 					{Key: "routes", GoName: "Routes", GoType: "[$]int", Default: m.Map{Entries: []m.MapEntry{{Key: "http", Value: m.Literal{Value: "80"}}, {Key: "https", Value: m.Literal{Value: "443"}}}}},
+					{Key: "header_sets", GoName: "HeaderSets", GoType: "map[string][]string", Default: m.Map{Entries: []m.MapEntry{{Key: "accept", Value: m.List{Items: []m.Expr{m.Literal{Value: "json"}, m.Literal{Value: "text"}}}}}}},
 					{Key: "retries", GoName: "Retries", GoType: "*int", Default: m.Literal{Value: "3"}},
 					{Key: "optional_flag", GoName: "OptionalFlag", GoType: "*bool"},
 					{Key: "sanitized_path", GoName: "SanitizedPath", GoType: "SanitizedString", Default: m.Literal{Value: "/my//path/"}},
@@ -283,6 +286,9 @@ func TestTypesAndLifecycle(t *testing.T) {
 	}
 	if cfg.App.Routes["http"] != 80 || cfg.App.Routes["https"] != 443 {
 		t.Errorf("Routes = %v, want http=80 and https=443", cfg.App.Routes)
+	}
+	if got := cfg.App.HeaderSets["accept"]; len(got) != 2 || got[0] != "json" || got[1] != "text" {
+		t.Errorf("HeaderSets = %v, want accept=[json text]", cfg.App.HeaderSets)
 	}
 	if cfg.App.Retries == nil || *cfg.App.Retries != 3 {
 		t.Errorf("Retries = %v, want &3", cfg.App.Retries)

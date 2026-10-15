@@ -1,9 +1,12 @@
 package codegen
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
+	"go/format"
 	"go/parser"
+	"go/token"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +34,10 @@ type TypeInfo struct {
 	IsSlice  bool
 	IsMap    bool
 	IsPtr    bool
+	// Element retains the complete type-directed shape of a collection member.
+	// It is nil for scalar values and avoids flattening nested lists/maps into
+	// an accidental scalar conversion path.
+	Element *TypeInfo
 }
 
 // ClassifyType inspects and categorizes a Go type expression for code generation.
@@ -45,73 +52,87 @@ func ClassifyType(goType string) (TypeInfo, error) {
 		return TypeInfo{}, fmt.Errorf("invalid Go type %q: %w", goType, err)
 	}
 
-	var isPtr bool
-	if star, ok := expr.(*ast.StarExpr); ok {
-		isPtr = true
-		expr = star.X
-	}
+	return classifyExpr(expr, goType)
+}
 
-	var isSlice bool
-	var isMap bool
+func classifyExpr(expr ast.Expr, goType string) (TypeInfo, error) {
+	if star, ok := expr.(*ast.StarExpr); ok {
+		child, err := classifyExpr(star.X, typeExprString(star.X))
+		if err != nil {
+			return TypeInfo{}, err
+		}
+		child.GoType, child.IsPtr = goType, true
+		return child, nil
+	}
 	if arr, ok := expr.(*ast.ArrayType); ok {
 		if arr.Len != nil {
 			return TypeInfo{}, fmt.Errorf("unsupported fixed-length array %q", goType)
 		}
-		// Special case: []byte
 		if ident, ok := arr.Elt.(*ast.Ident); ok && ident.Name == "byte" {
-			if isPtr {
-				return TypeInfo{GoType: goType, Kind: TypeKindBytes, ElemType: "byte", IsPtr: true}, nil
-			}
 			return TypeInfo{GoType: goType, Kind: TypeKindBytes, ElemType: "byte"}, nil
 		}
-		isSlice = true
-		expr = arr.Elt
+		elem, err := classifyExpr(arr.Elt, typeExprString(arr.Elt))
+		if err != nil {
+			return TypeInfo{}, err
+		}
+		return TypeInfo{GoType: goType, Kind: elem.Kind, ElemType: elem.GoType, IsSlice: true, Element: &elem}, nil
 	}
 	if mp, ok := expr.(*ast.MapType); ok {
 		key, ok := mp.Key.(*ast.Ident)
 		if !ok || key.Name != "string" {
 			return TypeInfo{}, fmt.Errorf("only string-keyed maps are supported: %q", goType)
 		}
-		isMap = true
-		expr = mp.Value
+		elem, err := classifyExpr(mp.Value, typeExprString(mp.Value))
+		if err != nil {
+			return TypeInfo{}, err
+		}
+		return TypeInfo{GoType: goType, Kind: elem.Kind, ElemType: elem.GoType, IsMap: true, Element: &elem}, nil
 	}
 
 	switch node := expr.(type) {
 	case *ast.Ident:
 		switch node.Name {
 		case "string":
-			return TypeInfo{GoType: goType, Kind: TypeKindString, IsSlice: isSlice, IsMap: isMap, IsPtr: isPtr, ElemType: node.Name}, nil
+			return TypeInfo{GoType: goType, Kind: TypeKindString, ElemType: node.Name}, nil
 		case "bool":
-			return TypeInfo{GoType: goType, Kind: TypeKindBool, IsSlice: isSlice, IsMap: isMap, IsPtr: isPtr, ElemType: node.Name}, nil
+			return TypeInfo{GoType: goType, Kind: TypeKindBool, ElemType: node.Name}, nil
 		case "int", "int8", "int16", "int32", "int64":
-			return TypeInfo{GoType: goType, Kind: TypeKindInt, IsSlice: isSlice, IsMap: isMap, IsPtr: isPtr, ElemType: node.Name}, nil
+			return TypeInfo{GoType: goType, Kind: TypeKindInt, ElemType: node.Name}, nil
 		case "uint", "uint8", "uint16", "uint32", "uint64", "uintptr":
-			return TypeInfo{GoType: goType, Kind: TypeKindUint, IsSlice: isSlice, IsMap: isMap, IsPtr: isPtr, ElemType: node.Name}, nil
+			return TypeInfo{GoType: goType, Kind: TypeKindUint, ElemType: node.Name}, nil
 		case "float32", "float64":
-			return TypeInfo{GoType: goType, Kind: TypeKindFloat, IsSlice: isSlice, IsMap: isMap, IsPtr: isPtr, ElemType: node.Name}, nil
+			return TypeInfo{GoType: goType, Kind: TypeKindFloat, ElemType: node.Name}, nil
 		case "byte":
-			return TypeInfo{GoType: goType, Kind: TypeKindUint, IsSlice: isSlice, IsMap: isMap, IsPtr: isPtr, ElemType: node.Name}, nil
+			return TypeInfo{GoType: goType, Kind: TypeKindUint, ElemType: node.Name}, nil
 		default:
 			if !ast.IsExported(node.Name) {
 				return TypeInfo{}, fmt.Errorf("unsupported type mapping %s", goType)
 			}
 			// Named application type identifier
-			return TypeInfo{GoType: goType, Kind: TypeKindCustom, IsSlice: isSlice, IsMap: isMap, IsPtr: isPtr, ElemType: node.Name}, nil
+			return TypeInfo{GoType: goType, Kind: TypeKindCustom, ElemType: node.Name}, nil
 		}
 
 	case *ast.SelectorExpr:
 		if pkg, ok := node.X.(*ast.Ident); ok {
 			if pkg.Name == "time" && node.Sel.Name == "Duration" {
-				return TypeInfo{GoType: goType, Kind: TypeKindDuration, IsSlice: isSlice, IsMap: isMap, IsPtr: isPtr, ElemType: "time.Duration"}, nil
+				return TypeInfo{GoType: goType, Kind: TypeKindDuration, ElemType: "time.Duration"}, nil
 			}
 			// Qualified custom type e.g. mypkg.MyType
-			return TypeInfo{GoType: goType, Kind: TypeKindCustom, IsSlice: isSlice, IsMap: isMap, IsPtr: isPtr, ElemType: pkg.Name + "." + node.Sel.Name}, nil
+			return TypeInfo{GoType: goType, Kind: TypeKindCustom, ElemType: pkg.Name + "." + node.Sel.Name}, nil
 		}
 		return TypeInfo{}, fmt.Errorf("unsupported qualified type %q", goType)
 
 	default:
 		return TypeInfo{}, fmt.Errorf("unsupported type mapping %q", goType)
 	}
+}
+
+func typeExprString(expr ast.Expr) string {
+	var b bytes.Buffer
+	if err := format.Node(&b, token.NewFileSet(), expr); err != nil {
+		return ""
+	}
+	return b.String()
 }
 
 func keyedElementType(goType string) (string, bool) {
