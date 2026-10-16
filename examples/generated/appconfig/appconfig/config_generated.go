@@ -327,18 +327,19 @@ func Load(ctx context.Context, d *nativeconfig.Document, opts ...LoadOption) (Co
 	for _, opt := range opts {
 		opt(&options)
 	}
+	working := d.Clone()
 	if options.Migrations != nil {
-		if err := options.Migrations.Apply(d, SchemaVersion); err != nil {
+		if err := options.Migrations.Apply(working, SchemaVersion); err != nil {
 			return Config{}, fmt.Errorf("migration failed: %w", err)
 		}
 	}
 	if !options.SkipEnrich {
-		if err := Enrich(d); err != nil {
-			return Config{}, fmt.Errorf("enrichment failed: %w", err)
+		if err := Enrich(working); err != nil {
+			return Config{}, err
 		}
 	}
-	if err := Validate(d, options.Strict); err != nil {
-		return Config{}, fmt.Errorf("validation failed: %w", err)
+	if err := Validate(working, options.Strict); err != nil {
+		return Config{}, err
 	}
 	r := options.Registry
 	if r == nil {
@@ -352,7 +353,12 @@ func Load(ctx context.Context, d *nativeconfig.Document, opts ...LoadOption) (Co
 	if lookup == nil {
 		lookup = os.LookupEnv
 	}
-	return Resolve(ctx, d, r, lookup)
+	cfg, err := Resolve(ctx, working, r, lookup)
+	if err != nil {
+		return Config{}, err
+	}
+	*d = *working
+	return cfg, nil
 }
 
 // LoadReader parses native configuration from r and loads it into typed Config.
@@ -422,8 +428,11 @@ func Enrich(d *nativeconfig.Document) error {
 	if d == nil {
 		return fmt.Errorf("nil document")
 	}
+	if d.Version > SchemaVersion {
+		return &nativeconfig.ConfigError{Stage: nativeconfig.StageValidate, Source: d.HeaderSpan, Err: fmt.Errorf("configuration version %d is newer than supported version %d", d.Version, SchemaVersion)}
+	}
 	if !d.HasVersion || d.Version != SchemaVersion {
-		return fmt.Errorf("configuration must be migrated to version %d before enrichment", SchemaVersion)
+		return &nativeconfig.ConfigError{Stage: nativeconfig.StageValidate, Source: d.HeaderSpan, Err: fmt.Errorf("configuration must be migrated to version %d before enrichment", SchemaVersion)}
 	}
 	{
 		s := d.Section("service")
@@ -434,16 +443,138 @@ func Enrich(d *nativeconfig.Document) error {
 			}
 			d.AddSection(s)
 		}
-		if _, _, ok := s.Entry("endpoint"); !ok {
-			s.Items = append(s.Items, nativeconfig.Entry{Key: "endpoint", Value: nativeconfig.Literal{Value: "https://api.internal.net"}, Defaulted: true})
-		}
+		enrichSection_Service(s)
 	}
 	for _, s := range d.Sections {
-		if !strings.HasPrefix(s.Name, "worker ") {
+		if strings.HasPrefix(s.Name, "worker ") {
+			enrichSection_Workers(s)
+		}
+	}
+	if group := d.Section("worker"); group != nil && group.Brace {
+		for _, s := range group.Sections {
+			enrichSection_Workers(s)
+		}
+	}
+	return nil
+}
+func enrichSection_Service(s *nativeconfig.Section) {
+	if _, _, ok := s.Entry("endpoint"); !ok {
+		s.Items = append(s.Items, nativeconfig.Entry{Key: "endpoint", Value: nativeconfig.Literal{Value: "https://api.internal.net"}, Defaulted: true})
+	}
+}
+
+func enrichSection_Workers(s *nativeconfig.Section) {
+	if _, _, ok := s.Entry("concurrency"); !ok {
+		s.Items = append(s.Items, nativeconfig.Entry{Key: "concurrency", Value: nativeconfig.Literal{Value: "4"}, Defaulted: true})
+	}
+}
+
+func validateRepeatedIdentity(rawName, prefix, pathPrefix string, span nativeconfig.Span) (string, error) {
+	ident := strings.TrimSpace(strings.TrimPrefix(rawName, prefix+" "))
+	if ident == "" || strings.ContainsAny(ident, " \t") {
+		return "", &nativeconfig.ConfigError{Stage: nativeconfig.StageValidate, Path: pathPrefix, Source: span, Err: fmt.Errorf("malformed repeated section identity in %q", rawName)}
+	}
+	return ident, nil
+}
+func isDeclaredChild_Root(name string) bool {
+	switch name {
+	case "service":
+		return true
+	case "worker":
+		return true
+	default:
+		return false
+	}
+}
+
+func isDeclaredChild_Service(name string) bool {
+	switch name {
+	default:
+		return false
+	}
+}
+
+func validateSection_Service(sNode *nativeconfig.Section, path string, strict bool) error {
+	seenEntries := map[string]bool{}
+	for _, item := range sNode.Items {
+		entry, ok := item.(nativeconfig.Entry)
+		if !ok {
 			continue
 		}
-		if _, _, ok := s.Entry("concurrency"); !ok {
-			s.Items = append(s.Items, nativeconfig.Entry{Key: "concurrency", Value: nativeconfig.Literal{Value: "4"}, Defaulted: true})
+		entryPath := path + "." + entry.Key
+		switch entry.Key {
+		}
+		if strict {
+			if seenEntries[entry.Key] {
+				return &nativeconfig.ConfigError{Stage: nativeconfig.StageBind, Path: entryPath, Source: entry.Span, Err: fmt.Errorf("duplicate unresolved field")}
+			}
+			seenEntries[entry.Key] = true
+			switch entry.Key {
+			case "endpoint":
+			case "api_key":
+			case "legacy_token":
+			default:
+				return &nativeconfig.ConfigError{Stage: nativeconfig.StageValidate, Path: entryPath, Source: entry.Span, Err: fmt.Errorf("unknown field %q in section %q", entry.Key, path)}
+			}
+		}
+	}
+	if e, _, ok := sNode.Entry("api_key"); !ok || e.Value == nil {
+		return &nativeconfig.ConfigError{Stage: nativeconfig.StageValidate, Path: path + "." + "api_key", Source: sNode.Span, Err: fmt.Errorf("missing required field %s.%s", path, "api_key")}
+	}
+	for _, childSec := range sNode.Sections {
+		switch {
+		default:
+			if strict {
+				unknownPath := path + "." + childSec.Name
+				if childSec.Name == "" {
+					unknownPath = path
+				}
+				return &nativeconfig.ConfigError{Stage: nativeconfig.StageValidate, Path: unknownPath, Source: childSec.Span, Err: fmt.Errorf("unknown section %q in %q", childSec.Name, path)}
+			}
+		}
+	}
+	return nil
+}
+
+func isDeclaredChild_Workers(name string) bool {
+	switch name {
+	default:
+		return false
+	}
+}
+
+func validateSection_Workers(sNode *nativeconfig.Section, path string, strict bool) error {
+	seenEntries := map[string]bool{}
+	for _, item := range sNode.Items {
+		entry, ok := item.(nativeconfig.Entry)
+		if !ok {
+			continue
+		}
+		entryPath := path + "." + entry.Key
+		switch entry.Key {
+		}
+		if strict {
+			if seenEntries[entry.Key] {
+				return &nativeconfig.ConfigError{Stage: nativeconfig.StageBind, Path: entryPath, Source: entry.Span, Err: fmt.Errorf("duplicate unresolved field")}
+			}
+			seenEntries[entry.Key] = true
+			switch entry.Key {
+			case "concurrency":
+			default:
+				return &nativeconfig.ConfigError{Stage: nativeconfig.StageValidate, Path: entryPath, Source: entry.Span, Err: fmt.Errorf("unknown field %q in section %q", entry.Key, path)}
+			}
+		}
+	}
+	for _, childSec := range sNode.Sections {
+		switch {
+		default:
+			if strict {
+				unknownPath := path + "." + childSec.Name
+				if childSec.Name == "" {
+					unknownPath = path
+				}
+				return &nativeconfig.ConfigError{Stage: nativeconfig.StageValidate, Path: unknownPath, Source: childSec.Span, Err: fmt.Errorf("unknown section %q in %q", childSec.Name, path)}
+			}
 		}
 	}
 	return nil
@@ -455,54 +586,96 @@ func Validate(d *nativeconfig.Document, strict bool) error {
 	if d == nil {
 		return fmt.Errorf("nil document")
 	}
+	if d.Version < 0 {
+		return &nativeconfig.ConfigError{Stage: nativeconfig.StageValidate, Source: d.HeaderSpan, Err: fmt.Errorf("invalid configuration version")}
+	}
 	if d.Version > SchemaVersion {
-		return fmt.Errorf("configuration version %d is newer than supported version %d", d.Version, SchemaVersion)
+		return &nativeconfig.ConfigError{Stage: nativeconfig.StageValidate, Source: d.HeaderSpan, Err: fmt.Errorf("configuration version %d is newer than supported version %d", d.Version, SchemaVersion)}
 	}
-	{
-		s := d.Section("service")
-		if s == nil {
-			return fmt.Errorf("missing required section %q", "service")
+	rootSeen := map[string]bool{}
+	for _, item := range d.Items {
+		entry, ok := item.(nativeconfig.Entry)
+		if !ok {
+			continue
 		}
-		if e, _, ok := s.Entry("api_key"); !ok || e.Value == nil {
-			return fmt.Errorf("missing required field %s.%s", "service", "api_key")
+		switch entry.Key {
 		}
-	}
-	if strict {
-		rootSeen := map[string]bool{}
-		for _, item := range d.Items {
-			entry, ok := item.(nativeconfig.Entry)
-			if !ok {
-				continue
-			}
+		if strict {
 			if rootSeen[entry.Key] {
 				return &nativeconfig.ConfigError{Stage: nativeconfig.StageBind, Path: entry.Key, Source: entry.Span, Err: fmt.Errorf("duplicate unresolved field")}
 			}
 			rootSeen[entry.Key] = true
 			switch entry.Key {
 			default:
-				return fmt.Errorf("unknown root field %q", entry.Key)
+				return &nativeconfig.ConfigError{Stage: nativeconfig.StageValidate, Path: entry.Key, Source: entry.Span, Err: fmt.Errorf("unknown root field %q", entry.Key)}
 			}
 		}
-		for _, s := range d.Sections {
-			seen := map[string]bool{}
-			switch {
-			case s.Name == "service":
-			case strings.HasPrefix(s.Name, "worker "):
-			default:
-				return fmt.Errorf("unknown section %q", s.Name)
+	}
+	found_Service := false
+	seenIdentities_Workers := map[string]bool{}
+	for _, sNode := range d.Sections {
+		switch {
+		case sNode.Name == "service":
+			if strict && found_Service {
+				return &nativeconfig.ConfigError{Stage: nativeconfig.StageBind, Path: "service", Source: sNode.Span, Err: fmt.Errorf("duplicate section %q", "service")}
 			}
-			for _, item := range s.Items {
+			found_Service = true
+			if err := validateSection_Service(sNode, "service", strict); err != nil {
+				return err
+			}
+		case strings.HasPrefix(sNode.Name, "service "):
+			return &nativeconfig.ConfigError{Stage: nativeconfig.StageValidate, Path: "service", Source: sNode.Span, Err: fmt.Errorf("section %q does not accept a named identity", "service")}
+		case strings.HasPrefix(sNode.Name, "worker "):
+			ident, err := validateRepeatedIdentity(sNode.Name, "worker", "worker", sNode.Span)
+			if err != nil {
+				return err
+			}
+			secPath := "worker" + "." + ident
+			if strict && seenIdentities_Workers[ident] {
+				return &nativeconfig.ConfigError{Stage: nativeconfig.StageBind, Path: secPath, Source: sNode.Span, Err: fmt.Errorf("duplicate worker identity %q", ident)}
+			}
+			seenIdentities_Workers[ident] = true
+			if err := validateSection_Workers(sNode, secPath, strict); err != nil {
+				return err
+			}
+		case sNode.Name == "worker":
+			if !sNode.Brace {
+				return &nativeconfig.ConfigError{Stage: nativeconfig.StageValidate, Path: "worker", Source: sNode.Span, Err: fmt.Errorf("missing repeated section identity for %q", "worker")}
+			}
+			for _, item := range sNode.Items {
 				if entry, ok := item.(nativeconfig.Entry); ok {
-					if seen[entry.Key] {
-						return &nativeconfig.ConfigError{Stage: nativeconfig.StageBind, Path: s.Name + "." + entry.Key, Source: entry.Span, Err: fmt.Errorf("duplicate unresolved field")}
-					}
-					seen[entry.Key] = true
-					if _, ok := Field(s.Name, entry.Key); !ok {
-						return fmt.Errorf("unknown field %q in section %q", entry.Key, s.Name)
-					}
+					return &nativeconfig.ConfigError{Stage: nativeconfig.StageValidate, Path: "worker" + "." + entry.Key, Source: entry.Span, Err: fmt.Errorf("repeated section %q requires a named instance before field %q", "worker", entry.Key)}
 				}
 			}
+			if len(sNode.Sections) == 0 {
+				return &nativeconfig.ConfigError{Stage: nativeconfig.StageValidate, Path: "worker", Source: sNode.Span, Err: fmt.Errorf("repeated section %q requires a named instance", "worker")}
+			}
+			for _, inst := range sNode.Sections {
+				if inst.Name == "" || strings.ContainsAny(inst.Name, " \t") {
+					return &nativeconfig.ConfigError{Stage: nativeconfig.StageValidate, Path: "worker", Source: inst.Span, Err: fmt.Errorf("malformed repeated section identity %q for %q", inst.Name, "worker")}
+				}
+				for _, sub := range inst.Sections {
+					if sub.Span.Line == inst.Span.Line && inst.Span.Line > 0 && !isDeclaredChild_Workers(sub.Name) {
+						return &nativeconfig.ConfigError{Stage: nativeconfig.StageValidate, Path: "worker" + "." + inst.Name, Source: sub.Span, Err: fmt.Errorf("malformed repeated section identity %q", "worker"+" "+inst.Name+" "+sub.Name)}
+					}
+				}
+				secPath := "worker" + "." + inst.Name
+				if strict && seenIdentities_Workers[inst.Name] {
+					return &nativeconfig.ConfigError{Stage: nativeconfig.StageBind, Path: secPath, Source: inst.Span, Err: fmt.Errorf("duplicate worker identity %q", inst.Name)}
+				}
+				seenIdentities_Workers[inst.Name] = true
+				if err := validateSection_Workers(inst, secPath, strict); err != nil {
+					return err
+				}
+			}
+		default:
+			if strict {
+				return &nativeconfig.ConfigError{Stage: nativeconfig.StageValidate, Path: sNode.Name, Source: sNode.Span, Err: fmt.Errorf("unknown section %q", sNode.Name)}
+			}
 		}
+	}
+	if !found_Service {
+		return &nativeconfig.ConfigError{Stage: nativeconfig.StageValidate, Path: "service" + "." + "api_key", Source: d.HeaderSpan, Err: fmt.Errorf("missing required section %q", "service")}
 	}
 	return nil
 }
@@ -519,15 +692,28 @@ func Inspect(d *nativeconfig.Document) *nativeconfig.Document {
 			cloned.Items[i] = entry
 		}
 	}
-	for _, s := range cloned.Sections {
+	var inspectSection func(s *nativeconfig.Section, path string)
+	inspectSection = func(s *nativeconfig.Section, path string) {
 		for i, item := range s.Items {
-			if entry, ok := item.(nativeconfig.Entry); ok {
-				if IsSensitive(s.Name, entry.Key) {
-					entry.Value = nativeconfig.Literal{Value: "[REDACTED]"}
-					s.Items[i] = entry
-				}
+			if entry, ok := item.(nativeconfig.Entry); ok && IsSensitive(path, entry.Key) {
+				entry.Value = nativeconfig.Literal{Value: "[REDACTED]"}
+				s.Items[i] = entry
 			}
 		}
+		for _, child := range s.Sections {
+			childPath := path
+			if child.Name != "" {
+				if childPath != "" {
+					childPath += "." + child.Name
+				} else {
+					childPath = child.Name
+				}
+			}
+			inspectSection(child, childPath)
+		}
+	}
+	for _, s := range cloned.Sections {
+		inspectSection(s, s.Name)
 	}
 	return cloned
 }
@@ -538,6 +724,44 @@ func InspectString(d *nativeconfig.Document) string {
 		return ""
 	}
 	return nativeconfig.Format(Inspect(d))
+}
+func normalizeSectionPath(section string) string {
+	if section == "" {
+		return ""
+	}
+	parts := strings.FieldsFunc(section, func(r rune) bool { return r == ' ' || r == '.' })
+	if len(parts) == 0 {
+		return ""
+	}
+	var out []string
+	idx := 0
+	scope := "root"
+	for idx < len(parts) {
+		tok := parts[idx]
+		switch scope {
+		case "root":
+			switch tok {
+			case "service":
+				out = append(out, "service")
+				scope = "service"
+				idx++
+			case "worker":
+				out = append(out, "worker")
+				scope = "worker"
+				idx++
+				if idx < len(parts) {
+					idx++
+				}
+			default:
+				out = append(out, tok)
+				idx++
+			}
+		default:
+			out = append(out, tok)
+			idx++
+		}
+	}
+	return strings.Join(out, ".")
 }
 
 // FieldMeta describes runtime schema metadata for a configuration field.
@@ -553,11 +777,7 @@ type FieldMeta struct {
 
 // Field looks up field metadata for section and key.
 func Field(section, key string) (FieldMeta, bool) {
-	baseSection := section
-	if strings.HasPrefix(section, "worker ") {
-		baseSection = "worker"
-	}
-	switch baseSection {
+	switch normalizeSectionPath(section) {
 	case "service":
 		switch key {
 		case "endpoint":

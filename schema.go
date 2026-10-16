@@ -123,6 +123,24 @@ func (s Schema) Sample() *Document {
 	d := &Document{Version: s.Version, HasVersion: true, Items: []Item{Version{}, Blank{},
 		Comment{Kind: UserComment, Text: "Single # comments belong to you; ## documentation is schema-managed."},
 		Comment{Kind: DocumentationComment, Text: "Examples below are comments, not active values or defaults."}, Blank{}}}
+	for _, f := range s.RootFields {
+		if f.RuntimeOnly || f.InputOnly || f.Deprecated {
+			continue
+		}
+		for _, text := range f.Documentation {
+			d.Items = append(d.Items, Comment{Kind: DocumentationComment, Text: text})
+		}
+		if len(f.Examples) > 0 {
+			d.Items = append(d.Items, Comment{Kind: DocumentationComment, Text: "Examples (inactive):"})
+			for _, e := range f.Examples {
+				d.Items = append(d.Items, Comment{Kind: DocumentationComment, Text: "  " + f.Key + " " + FormatExpr(e)})
+			}
+		}
+		if f.Default != nil {
+			d.Set(f.Key, CloneExpr(f.Default))
+		}
+		d.Items = append(d.Items, Blank{})
+	}
 	for _, def := range s.Sections {
 		names := []string{def.Name}
 		if def.Repeated {
@@ -130,31 +148,12 @@ func (s Schema) Sample() *Document {
 			for _, name := range def.ExampleNames {
 				names = append(names, def.Name+" "+name)
 			}
+			if len(names) == 0 {
+				names = append(names, def.Name+" default")
+			}
 		}
 		for _, name := range names {
-			section := &Section{Name: name}
-			for _, text := range def.Documentation {
-				section.Items = append(section.Items, Comment{Kind: DocumentationComment, Text: text})
-			}
-			section.Items = append(section.Items, Blank{})
-			for _, f := range def.Fields {
-				if f.RuntimeOnly || f.InputOnly || f.Deprecated {
-					continue
-				}
-				for _, text := range f.Documentation {
-					section.Items = append(section.Items, Comment{Kind: DocumentationComment, Text: text})
-				}
-				if len(f.Examples) > 0 {
-					section.Items = append(section.Items, Comment{Kind: DocumentationComment, Text: "Examples (inactive):"})
-					for _, e := range f.Examples {
-						section.Items = append(section.Items, Comment{Kind: DocumentationComment, Text: "  " + f.Key + " " + FormatExpr(e)})
-					}
-				}
-				if f.Default != nil {
-					section.Set(f.Key, CloneExpr(f.Default))
-				}
-				section.Items = append(section.Items, Blank{})
-			}
+			section := sampleSectionDefinition(def, name)
 			if def.Repeated {
 				// Comment the entire repeated section: examples must not create
 				// an empty provider/config instance just by running the sample.
@@ -179,6 +178,52 @@ func (s Schema) Sample() *Document {
 		}
 	}
 	return d
+}
+
+func sampleSectionDefinition(def SectionDefinition, name string) *Section {
+	section := &Section{Name: name}
+	for _, text := range def.Documentation {
+		section.Items = append(section.Items, Comment{Kind: DocumentationComment, Text: text})
+	}
+	if len(def.Documentation) > 0 {
+		section.Items = append(section.Items, Blank{})
+	}
+	for _, f := range def.Fields {
+		if f.RuntimeOnly || f.InputOnly || f.Deprecated {
+			continue
+		}
+		for _, text := range f.Documentation {
+			section.Items = append(section.Items, Comment{Kind: DocumentationComment, Text: text})
+		}
+		if len(f.Examples) > 0 {
+			section.Items = append(section.Items, Comment{Kind: DocumentationComment, Text: "Examples (inactive):"})
+			for _, e := range f.Examples {
+				section.Items = append(section.Items, Comment{Kind: DocumentationComment, Text: "  " + f.Key + " " + FormatExpr(e)})
+			}
+		}
+		if f.Default != nil {
+			section.Set(f.Key, CloneExpr(f.Default))
+		}
+		section.Items = append(section.Items, Blank{})
+	}
+	for _, child := range def.Children {
+		names := []string{child.Name}
+		if child.Repeated {
+			names = nil
+			for _, exName := range child.ExampleNames {
+				names = append(names, child.Name+" "+exName)
+			}
+			if len(names) == 0 {
+				names = append(names, child.Name+" default")
+			}
+		}
+		for _, chName := range names {
+			childSec := sampleSectionDefinition(child, chName)
+			section.AddSection(childSec)
+			section.Items = append(section.Items, Blank{})
+		}
+	}
+	return section
 }
 
 type Schema struct {
@@ -224,77 +269,127 @@ func (s Schema) Enrich(d *Document) error {
 			Err:   fmt.Errorf("configuration must be migrated to version %d before enrichment", s.Version),
 		}
 	}
-	for _, def := range s.Sections {
-		var sections []*Section
+	// Enrich RootFields
+	for _, f := range s.RootFields {
+		if f.RuntimeOnly || f.InputOnly || f.Deprecated {
+			continue
+		}
+		if _, idx, exists := d.Entry(f.Key); exists {
+			start := idx
+			for start > 0 {
+				if _, ok := d.Items[start-1].(Comment); !ok {
+					break
+				}
+				start--
+			}
+			d.Items = refreshDocs(d.Items, start, idx, f.Documentation)
+		} else if f.Default != nil {
+			for _, text := range f.Documentation {
+				d.Items = append(d.Items, Comment{Kind: DocumentationComment, Text: text})
+			}
+			d.Items = append(d.Items, Entry{
+				Key:       f.Key,
+				Value:     WithOrigin(CloneExpr(f.Default), OriginDefaulted),
+				Defaulted: true,
+				Origin:    OriginDefaulted,
+			})
+		}
+	}
+	enrichSectionDefinitions(s.Sections, d.Sections, d)
+	return nil
+}
+
+func enrichSection(def SectionDefinition, section *Section) {
+	// Section docs occupy the initial block ending at a blank line. This
+	// delimiter disambiguates them from the first field's documentation.
+	end := 0
+	for end < len(section.Items) {
+		if _, ok := section.Items[end].(Comment); !ok {
+			break
+		}
+		end++
+	}
+	hasBoundary := end < len(section.Items)
+	if hasBoundary {
+		_, hasBoundary = section.Items[end].(Blank)
+	}
+	if hasBoundary {
+		section.Items = refreshDocs(section.Items, 0, end, def.Documentation)
+	} else if len(def.Documentation) > 0 {
+		prefix := []Item{}
+		for _, text := range def.Documentation {
+			prefix = append(prefix, Comment{Kind: DocumentationComment, Text: text})
+		}
+		prefix = append(prefix, Blank{})
+		section.Items = append(prefix, section.Items...)
+	}
+	for _, f := range def.Fields {
+		if f.RuntimeOnly || f.InputOnly || f.Deprecated {
+			continue
+		}
+		if _, idx, exists := section.Entry(f.Key); exists {
+			start := idx
+			for start > 0 {
+				if _, ok := section.Items[start-1].(Comment); !ok {
+					break
+				}
+				start--
+			}
+			section.Items = refreshDocs(section.Items, start, idx, f.Documentation)
+		} else if f.Default != nil {
+			for _, text := range f.Documentation {
+				section.Items = append(section.Items, Comment{Kind: DocumentationComment, Text: text})
+			}
+			section.Items = append(section.Items, Entry{
+				Key:       f.Key,
+				Value:     WithOrigin(CloneExpr(f.Default), OriginDefaulted),
+				Defaulted: true,
+				Origin:    OriginDefaulted,
+			})
+		}
+	}
+	if len(def.Children) > 0 {
+		enrichSectionDefinitions(def.Children, section.Sections, nil)
+	}
+}
+
+func enrichSectionDefinitions(defs []SectionDefinition, sections []*Section, doc *Document) {
+	for _, def := range defs {
 		if def.Repeated {
-			for _, section := range d.Sections {
+			// Legacy repeated sections: "def.Name instance"
+			for _, section := range sections {
 				if strings.HasPrefix(section.Name, def.Name+" ") {
-					sections = append(sections, section)
+					enrichSection(def, section)
+				}
+			}
+			// Canonical brace container: container "def.Name" with children
+			for _, section := range sections {
+				if section.Name == def.Name && section.Brace {
+					for _, inst := range section.Sections {
+						enrichSection(def, inst)
+					}
 				}
 			}
 		} else {
-			section := d.Section(def.Name)
-			if section == nil {
-				section = &Section{Name: def.Name, Origin: OriginEnriched}
-				if len(d.Sections) > 0 {
-					d.Items = append(d.Items, Blank{})
-				}
-				d.AddSection(section)
-			}
-			sections = append(sections, section)
-		}
-		for _, section := range sections {
-			// Section docs occupy the initial block ending at a blank line. This
-			// delimiter disambiguates them from the first field's documentation.
-			end := 0
-			for end < len(section.Items) {
-				if _, ok := section.Items[end].(Comment); !ok {
+			var section *Section
+			for _, s := range sections {
+				if s.Name == def.Name {
+					section = s
 					break
 				}
-				end++
 			}
-			hasBoundary := end < len(section.Items)
-			if hasBoundary {
-				_, hasBoundary = section.Items[end].(Blank)
+			if section == nil && doc != nil {
+				section = &Section{Name: def.Name, Origin: OriginEnriched}
+				if len(doc.Sections) > 0 {
+					doc.Items = append(doc.Items, Blank{})
+				}
+				doc.AddSection(section)
 			}
-			if hasBoundary {
-				section.Items = refreshDocs(section.Items, 0, end, def.Documentation)
-			} else if len(def.Documentation) > 0 {
-				prefix := []Item{}
-				for _, text := range def.Documentation {
-					prefix = append(prefix, Comment{Kind: DocumentationComment, Text: text})
-				}
-				prefix = append(prefix, Blank{})
-				section.Items = append(prefix, section.Items...)
-			}
-			for _, f := range def.Fields {
-				if f.RuntimeOnly || f.InputOnly || f.Deprecated {
-					continue
-				}
-				if _, idx, exists := section.Entry(f.Key); exists {
-					start := idx
-					for start > 0 {
-						if _, ok := section.Items[start-1].(Comment); !ok {
-							break
-						}
-						start--
-					}
-					section.Items = refreshDocs(section.Items, start, idx, f.Documentation)
-				} else if f.Default != nil {
-					for _, text := range f.Documentation {
-						section.Items = append(section.Items, Comment{Kind: DocumentationComment, Text: text})
-					}
-					section.Items = append(section.Items, Entry{
-						Key:       f.Key,
-						Value:     WithOrigin(CloneExpr(f.Default), OriginDefaulted),
-						Defaulted: true,
-						Origin:    OriginDefaulted,
-					})
-				}
+			if section != nil {
+				enrichSection(def, section)
 			}
 		}
 	}
-	return nil
 }
 
 func (s Schema) CheckVersion(d *Document) error {
@@ -325,9 +420,27 @@ func (s Schema) Validate(d *Document) error {
 	if err := s.CheckVersion(d); err != nil {
 		return err
 	}
-	for _, def := range s.Sections {
+	for _, f := range s.RootFields {
+		if f.Required {
+			entry, _, exists := d.Entry(f.Key)
+			if !exists || entry.Value == nil {
+				return &ConfigError{
+					Stage:  StageValidate,
+					Path:   f.Key,
+					Source: d.HeaderSpan,
+					Err:    fmt.Errorf("required field %q is missing", f.Key),
+				}
+			}
+		}
+	}
+	return validateSectionDefinitions(s.Sections, d.Sections, "", d.HeaderSpan)
+}
+
+func validateSectionDefinitions(defs []SectionDefinition, sections []*Section, pathPrefix string, parentSpan Span) error {
+	for _, def := range defs {
 		if def.Repeated {
-			for _, section := range d.Sections {
+			// Legacy repeated sections: "def.Name instance"
+			for _, section := range sections {
 				if !strings.HasPrefix(section.Name, def.Name+" ") {
 					continue
 				}
@@ -339,22 +452,77 @@ func (s Schema) Validate(d *Document) error {
 					if !exists || entry.Value == nil {
 						return &ConfigError{
 							Stage:  StageValidate,
-							Path:   section.Name + "." + f.Key,
+							Path:   pathPrefix + section.Name + "." + f.Key,
 							Source: section.Span,
 							Err:    fmt.Errorf("required field %q is missing", f.Key),
 						}
 					}
 				}
+				if len(def.Children) > 0 {
+					if err := validateSectionDefinitions(def.Children, section.Sections, pathPrefix+section.Name+".", section.Span); err != nil {
+						return err
+					}
+				}
+			}
+			// Canonical brace repeated sections: container "def.Name" with children
+			for _, section := range sections {
+				if section.Name != def.Name || !section.Brace {
+					continue
+				}
+				for _, inst := range section.Sections {
+					instPath := pathPrefix + def.Name + "." + inst.Name
+					for _, f := range def.Fields {
+						if !f.Required {
+							continue
+						}
+						entry, _, exists := inst.Entry(f.Key)
+						if !exists || entry.Value == nil {
+							return &ConfigError{
+								Stage:  StageValidate,
+								Path:   instPath + "." + f.Key,
+								Source: inst.Span,
+								Err:    fmt.Errorf("required field %q is missing", f.Key),
+							}
+						}
+					}
+					if len(def.Children) > 0 {
+						if err := validateSectionDefinitions(def.Children, inst.Sections, instPath+".", inst.Span); err != nil {
+							return err
+						}
+					}
+				}
 			}
 		} else {
-			section := d.Section(def.Name)
+			// Non-repeated section: search in sections
+			var section *Section
+			for _, s := range sections {
+				if s.Name == def.Name {
+					section = s
+					break
+				}
+			}
 			if section == nil {
 				for _, f := range def.Fields {
 					if f.Required {
 						return &ConfigError{
-							Stage: StageValidate,
-							Path:  def.Name + "." + f.Key,
-							Err:   fmt.Errorf("required section %q is missing", def.Name),
+							Stage:  StageValidate,
+							Path:   pathPrefix + def.Name + "." + f.Key,
+							Source: parentSpan,
+							Err:    fmt.Errorf("required section %q is missing", def.Name),
+						}
+					}
+				}
+				if len(def.Children) > 0 {
+					for _, ch := range def.Children {
+						for _, f := range ch.Fields {
+							if f.Required {
+								return &ConfigError{
+									Stage:  StageValidate,
+									Path:   pathPrefix + def.Name + "." + ch.Name + "." + f.Key,
+									Source: parentSpan,
+									Err:    fmt.Errorf("required section %q is missing", def.Name),
+								}
+							}
 						}
 					}
 				}
@@ -368,11 +536,67 @@ func (s Schema) Validate(d *Document) error {
 				if !exists || entry.Value == nil {
 					return &ConfigError{
 						Stage:  StageValidate,
-						Path:   def.Name + "." + f.Key,
+						Path:   pathPrefix + def.Name + "." + f.Key,
 						Source: section.Span,
 						Err:    fmt.Errorf("required field %q is missing", f.Key),
 					}
 				}
+			}
+			if len(def.Children) > 0 {
+				if err := validateSectionDefinitions(def.Children, section.Sections, pathPrefix+def.Name+".", section.Span); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (s Schema) findSectionDef(section string) *SectionDefinition {
+	var tokens []string
+	for _, part := range strings.Split(section, ".") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		for _, sub := range strings.Fields(part) {
+			tokens = append(tokens, sub)
+		}
+	}
+	if len(tokens) == 0 {
+		return nil
+	}
+	return matchSectionDef(s.Sections, tokens)
+}
+
+func matchSectionDef(defs []SectionDefinition, tokens []string) *SectionDefinition {
+	if len(tokens) == 0 {
+		return nil
+	}
+	for i := range defs {
+		def := &defs[i]
+		if def.Name == tokens[0] {
+			if len(tokens) == 1 {
+				return def
+			}
+			rest := tokens[1:]
+			if def.Repeated && len(rest) > 0 {
+				isChild := false
+				for _, ch := range def.Children {
+					if ch.Name == rest[0] {
+						isChild = true
+						break
+					}
+				}
+				if !isChild {
+					rest = rest[1:]
+				}
+			}
+			if len(rest) == 0 {
+				return def
+			}
+			if childMatch := matchSectionDef(def.Children, rest); childMatch != nil {
+				return childMatch
 			}
 		}
 	}
@@ -382,13 +606,21 @@ func (s Schema) Validate(d *Document) error {
 // Field looks up accepted persisted input, including InputOnly compatibility
 // fields. Readers, migrations, inspection, and removal may use this lookup.
 func (s Schema) Field(section, key string) (Field, bool) {
-	for _, sec := range s.Sections {
-		if sec.Name == section || sec.Repeated && strings.HasPrefix(section, sec.Name+" ") {
-			for _, f := range sec.Fields {
-				if f.Key == key && !f.RuntimeOnly {
-					return f, true
-				}
+	if section == "" || section == "." {
+		for _, f := range s.RootFields {
+			if f.Key == key && !f.RuntimeOnly {
+				return f, true
 			}
+		}
+		return Field{}, false
+	}
+	def := s.findSectionDef(section)
+	if def == nil {
+		return Field{}, false
+	}
+	for _, f := range def.Fields {
+		if f.Key == key && !f.RuntimeOnly {
+			return f, true
 		}
 	}
 	return Field{}, false
@@ -399,4 +631,24 @@ func (s Schema) Field(section, key string) (Field, bool) {
 func (s Schema) WritableField(section, key string) (Field, bool) {
 	f, ok := s.Field(section, key)
 	return f, ok && !f.InputOnly
+}
+
+func (s Schema) IsSensitive(section, key string) bool {
+	f, ok := s.Field(section, key)
+	return ok && f.Sensitive
+}
+
+func (s Schema) IsRequired(section, key string) bool {
+	f, ok := s.Field(section, key)
+	return ok && f.Required
+}
+
+func (s Schema) IsInputOnly(section, key string) bool {
+	f, ok := s.Field(section, key)
+	return ok && f.InputOnly
+}
+
+func (s Schema) IsWritable(section, key string) bool {
+	_, ok := s.WritableField(section, key)
+	return ok
 }

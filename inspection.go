@@ -64,15 +64,38 @@ func (s Schema) Inspect(d *Document, section, key string, p DisplayPolicy) (stri
 // Format/Save the original document to preserve authored declarations.
 func (s Schema) InspectionDocument(d *Document, p DisplayPolicy) *Document {
 	copy := d.Clone()
-	for _, section := range copy.Sections {
+	for i, item := range copy.Items {
+		if entry, ok := item.(Entry); ok {
+			if f, known := s.Field("", entry.Key); known && f.Sensitive && !p.SafeSource(entry.Value) {
+				entry.Value = Literal{Value: "<redacted>"}
+				copy.Items[i] = entry
+			}
+		}
+	}
+	var redactSection func(section *Section, path string)
+	redactSection = func(section *Section, path string) {
 		for i, item := range section.Items {
 			if entry, ok := item.(Entry); ok {
-				if f, known := s.Field(section.Name, entry.Key); known && f.Sensitive && !p.SafeSource(entry.Value) {
+				if f, known := s.Field(path, entry.Key); known && f.Sensitive && !p.SafeSource(entry.Value) {
 					entry.Value = Literal{Value: "<redacted>"}
 					section.Items[i] = entry
 				}
 			}
 		}
+		for _, child := range section.Sections {
+			childPath := path
+			if child.Name != "" {
+				if childPath != "" {
+					childPath += "." + child.Name
+				} else {
+					childPath = child.Name
+				}
+			}
+			redactSection(child, childPath)
+		}
+	}
+	for _, section := range copy.Sections {
+		redactSection(section, section.Name)
 	}
 	return copy
 }

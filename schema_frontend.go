@@ -202,7 +202,7 @@ func isFieldDefinitionSection(sec *Section) bool {
 	// Brace field syntax is represented as `key { type { metadata } }` or
 	// `key { go_type T; metadata }` by the canonical parser. A structural
 	// child, in contrast, owns field/child sections of its own.
-	if len(sec.Sections) == 1 && isValidGoType(sec.Sections[0].Name) && len(sec.Sections[0].Sections) == 0 {
+	if len(sec.Sections) == 1 && !strings.HasPrefix(sec.Sections[0].Name, "field ") && isValidGoType(sec.Sections[0].Name) && len(sec.Sections[0].Sections) == 0 {
 		return true
 	}
 	if len(sec.Sections) == 0 {
@@ -627,6 +627,13 @@ func formatSchemaSection(b *strings.Builder, sec SectionDefinition, indent strin
 	if sec.Repeated {
 		fmt.Fprintf(b, "%srepeated true\n", inner)
 	}
+	if len(sec.ExampleNames) > 0 {
+		quoted := make([]string, len(sec.ExampleNames))
+		for i, name := range sec.ExampleNames {
+			quoted[i] = strconv.Quote(name)
+		}
+		fmt.Fprintf(b, "%sexample_names [%s]\n", inner, strings.Join(quoted, ", "))
+	}
 	for _, doc := range sec.Documentation {
 		fmt.Fprintf(b, "%s## %s\n", inner, doc)
 	}
@@ -638,6 +645,12 @@ func formatSchemaSection(b *strings.Builder, sec SectionDefinition, indent strin
 		}
 		if f.Default != nil {
 			fmt.Fprintf(b, "%sdefault %s\n", fieldIndent, FormatExpr(f.Default))
+		}
+		for _, ex := range f.Examples {
+			fmt.Fprintf(b, "%sexample %s\n", fieldIndent, FormatExpr(ex))
+		}
+		for _, doc := range f.Documentation {
+			fmt.Fprintf(b, "%s## %s\n", fieldIndent, doc)
 		}
 		if f.Required {
 			fmt.Fprintf(b, "%srequired true\n", fieldIndent)
@@ -673,11 +686,11 @@ func formatSchemaSection(b *strings.Builder, sec SectionDefinition, indent strin
 }
 
 func isValidGoType(t string) bool {
-	if t == "true" || t == "false" || t == "" {
+	if t == "true" || t == "false" || t == "" || strings.ContainsAny(t, " \t") {
 		return false
 	}
 	elem, _ := ParseType(t)
-	if elem == "" || elem == "true" || elem == "false" {
+	if elem == "" || elem == "true" || elem == "false" || strings.ContainsAny(elem, " \t") {
 		return false
 	}
 	first := rune(elem[0])

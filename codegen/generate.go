@@ -66,6 +66,11 @@ func Validate(s m.Schema) error {
 				return fmt.Errorf("duplicate or empty root config path %s", f.Key)
 			}
 			rootKeys[f.Key] = true
+		} else if f.Key != "" {
+			if rootKeys[f.Key] {
+				return fmt.Errorf("duplicate or empty root config path %s", f.Key)
+			}
+			rootKeys[f.Key] = true
 		}
 		ti, err := ClassifyType(f.GoType)
 		if err != nil {
@@ -81,7 +86,7 @@ func Validate(s m.Schema) error {
 		if f.Policy != m.Eager && f.Policy != m.ProviderBacked {
 			return fmt.Errorf("unsupported resolution policy")
 		}
-		if f.RuntimeOnly && (f.Default != nil || f.Environment != "" || f.Policy != m.Eager || f.Key != "") {
+		if f.RuntimeOnly && (f.Default != nil || f.Environment != "" || f.Policy != m.Eager || f.Required) {
 			return fmt.Errorf("runtime-only root field has persisted policy")
 		}
 		if _, err := expression(f.Default); err != nil {
@@ -133,6 +138,11 @@ func Validate(s m.Schema) error {
 					return fmt.Errorf("duplicate or empty config path %s.%s", sec.Name, f.Key)
 				}
 				keys[f.Key] = true
+			} else if f.Key != "" {
+				if keys[f.Key] {
+					return fmt.Errorf("duplicate or empty config path %s.%s", sec.Name, f.Key)
+				}
+				keys[f.Key] = true
 			}
 			ti, err := ClassifyType(f.GoType)
 			if err != nil {
@@ -148,7 +158,7 @@ func Validate(s m.Schema) error {
 			if f.Policy != m.Eager && f.Policy != m.ProviderBacked {
 				return fmt.Errorf("unsupported resolution policy")
 			}
-			if f.RuntimeOnly && (f.Default != nil || f.Environment != "" || f.Policy != m.Eager || f.Key != "") {
+			if f.RuntimeOnly && (f.Default != nil || f.Environment != "" || f.Policy != m.Eager || f.Required) {
 				return fmt.Errorf("runtime-only field has persisted policy")
 			}
 			if _, err := expression(f.Default); err != nil {
@@ -211,6 +221,11 @@ func validateChildDefinitions(parent m.SectionDefinition, path string, typesSeen
 					return fmt.Errorf("duplicate or empty config path %s.%s", childPath, f.Key)
 				}
 				keys[f.Key] = true
+			} else if f.Key != "" {
+				if keys[f.Key] {
+					return fmt.Errorf("duplicate or empty config path %s.%s", childPath, f.Key)
+				}
+				keys[f.Key] = true
 			}
 			ti, err := ClassifyType(f.GoType)
 			if err != nil {
@@ -226,7 +241,7 @@ func validateChildDefinitions(parent m.SectionDefinition, path string, typesSeen
 			if f.Policy != m.Eager && f.Policy != m.ProviderBacked {
 				return fmt.Errorf("unsupported resolution policy")
 			}
-			if f.RuntimeOnly && (f.Default != nil || f.Environment != "" || f.Policy != m.Eager || f.Key != "") {
+			if f.RuntimeOnly && (f.Default != nil || f.Environment != "" || f.Policy != m.Eager || f.Required) {
 				return fmt.Errorf("runtime-only field has persisted policy")
 			}
 			if _, err := expression(f.Default); err != nil {
@@ -757,7 +772,15 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 		if f.Policy == m.ProviderBacked {
 			p("c.%s=%s.FieldProvider[%s](r,e,%q,%t)\n", f.GoName, rtAlias, f.ResolvedGoType(), f.Key, f.Sensitive)
 		} else {
-			p("value,err:=decodeRoot%s(ctx,r,e);if err!=nil{return %sConfig{},err};c.%s=value\n", f.GoName, qual, f.GoName)
+			p("value,err:=decodeRoot%s(ctx,r,e);if err!=nil{return %sConfig{},err}\n", f.GoName, qual)
+			if f.Sensitive {
+				p("if s,ok:=any(&value).(interface{SanitizeConfig()error});ok{if err:=s.SanitizeConfig();err!=nil{return %sConfig{},fmt.Errorf(\"sanitize %%s: failed\", %q)}}\n", qual, f.Key)
+				p("if v,ok:=any(&value).(interface{ValidateConfig()error});ok{if err:=v.ValidateConfig();err!=nil{return %sConfig{},fmt.Errorf(\"validate %%s: failed\", %q)}}\n", qual, f.Key)
+			} else {
+				p("if s,ok:=any(&value).(interface{SanitizeConfig()error});ok{if err:=s.SanitizeConfig();err!=nil{return %sConfig{},fmt.Errorf(\"sanitize %%s: %%w\", %q, err)}}\n", qual, f.Key)
+				p("if v,ok:=any(&value).(interface{ValidateConfig()error});ok{if err:=v.ValidateConfig();err!=nil{return %sConfig{},fmt.Errorf(\"validate %%s: %%w\", %q, err)}}\n", qual, f.Key)
+			}
+			p("c.%s=value\n", f.GoName)
 		}
 		p("}}\n")
 	}
@@ -890,6 +913,11 @@ func emitNestedSectionResolve(p func(string, ...any), parent m.SectionDefinition
 				return err
 			}
 			p("%s=append(%s,value)}}\n", childDest, childDest)
+			p("if %s!=nil{if group:=%s.Section(%q);group!=nil{for _,%s:=range group.Sections{var value %s%s;value.Name=%s.Name\n", parentExpr, parentExpr, child.Name, childVar, qual, child.GoType, childVar)
+			if err := emitSectionValueResolve(p, child, childVar, "value", prefix+child.GoName, path+"."+child.Name, qual, rtAlias); err != nil {
+				return err
+			}
+			p("%s=append(%s,value)}}}\n", childDest, childDest)
 			continue
 		}
 		p("if %s!=nil{if %s:=%s.Section(%q);%s!=nil{var value %s%s\n", parentExpr, childVar, parentExpr, child.Name, childVar, qual, child.GoType)

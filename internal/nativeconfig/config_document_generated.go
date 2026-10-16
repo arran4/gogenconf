@@ -374,7 +374,14 @@ func (d *Document) Value(section, key string) Expr {
 		}
 		return e.Value
 	}
-	e, _, ok := d.Section(section).Entry(key)
+	s := d.Section(section)
+	if s == nil && strings.Contains(section, ".") {
+		s = d.SectionPath(strings.Split(section, ".")...)
+	}
+	if s == nil {
+		return nil
+	}
+	e, _, ok := s.Entry(key)
 	if !ok {
 		return nil
 	}

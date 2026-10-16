@@ -135,11 +135,11 @@ func (Blank) item() {}
 type MutationKind uint8
 
 const (
-	MutationNone MutationKind = iota
-	MutationAdd               // [+] add / append / insert
-	MutationReplace           // [=] replace / overwrite
-	MutationMutate            // [~] mutate / inherit / deep-merge (not prepend)
-	MutationDelete            // [-] delete / remove
+	MutationNone    MutationKind = iota
+	MutationAdd                  // [+] add / append / insert
+	MutationReplace              // [=] replace / overwrite
+	MutationMutate               // [~] mutate / inherit / deep-merge (not prepend)
+	MutationDelete               // [-] delete / remove
 )
 
 func (m MutationKind) String() string {
@@ -372,7 +372,14 @@ func (d *Document) Value(section, key string) Expr {
 		}
 		return e.Value
 	}
-	e, _, ok := d.Section(section).Entry(key)
+	s := d.Section(section)
+	if s == nil && strings.Contains(section, ".") {
+		s = d.SectionPath(strings.Split(section, ".")...)
+	}
+	if s == nil {
+		return nil
+	}
+	e, _, ok := s.Entry(key)
 	if !ok {
 		return nil
 	}
