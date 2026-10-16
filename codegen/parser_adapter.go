@@ -24,7 +24,8 @@ func parserDefinitions(s m.Schema) ([]parserDefinition, error) {
 		if err != nil {
 			return err
 		}
-		def := parserDefinition{Name: f.Parser, Symbol: symbol, GoType: f.ResolvedGoType()}
+		goType, _ := m.ParseType(f.GoType)
+		def := parserDefinition{Name: f.Parser, Symbol: symbol, GoType: goType}
 		if previous, ok := seen[symbol]; ok {
 			if previous.Name != def.Name || previous.GoType != def.GoType {
 				return fmt.Errorf("parser %q has incompatible generated adapter types %s and %s", f.Parser, previous.GoType, def.GoType)

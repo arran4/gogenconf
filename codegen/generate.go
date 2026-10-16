@@ -698,6 +698,8 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 			p("type %sFunc func(raw string,span %s.Span)(%s,error)\n", parser.Symbol, rtAlias, parser.GoType)
 			p("// %sFormatter is the explicit inverse contract for values accepted by %sFunc.\n", parser.Symbol, parser.Symbol)
 			p("type %sFormatter interface{FormatConfig()(string,error)}\nfunc Format%s(value %s)(string,error){formatter,ok:=any(value).(%sFormatter);if !ok{return \"\",fmt.Errorf(%q)};raw,err:=formatter.FormatConfig();if err!=nil{return \"\",fmt.Errorf(%q,err)};if len(raw)>65536{return \"\",fmt.Errorf(\"formatted custom expression exceeds 65536 bytes\")};return raw,nil}\n", parser.Symbol, parser.Symbol, parser.GoType, parser.Symbol, "value does not implement "+parser.Symbol+"Formatter", "format parser "+parser.Name+": %w")
+			p("func Format%sSlice(values []%s)([]string,error){if len(values)>65536{return nil,fmt.Errorf(\"collection exceeds 65536 items\")};out:=make([]string,len(values));for i,v:=range values{s,err:=Format%s(v);if err!=nil{return nil,err};out[i]=s};return out,nil}\n", parser.Symbol, parser.GoType, parser.Symbol)
+			p("func Format%sMap(values map[string]%s)(map[string]string,error){if len(values)>65536{return nil,fmt.Errorf(\"collection exceeds 65536 entries\")};out:=make(map[string]string,len(values));for k,v:=range values{s,err:=Format%s(v);if err!=nil{return nil,err};out[k]=s};return out,nil}\n", parser.Symbol, parser.GoType, parser.Symbol)
 		}
 		p("type decoderOptions struct{\n")
 		for _, parser := range parsers {
@@ -780,7 +782,7 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 		}
 		if f.Parser != "" {
 			symbol, _ := parserSymbol(f.Parser)
-			emitStaticParserDecoder(p, staticDecoderName("Root", f.GoName), f.ResolvedGoType(), symbol+"Func", rtAlias, f.Key, f.Sensitive)
+			emitStaticParserDecoder(p, staticDecoderName("Root", f.GoName), f.ResolvedGoType(), ti, symbol+"Func", rtAlias, f.Key, f.Sensitive)
 		} else {
 			emitStaticDecoder(p, staticDecoderName("Root", f.GoName), f.ResolvedGoType(), ti, rtAlias, f.Key, f.Sensitive)
 		}
@@ -805,7 +807,15 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 			p("c.%s=%s.FieldProvider[%s](r,e,%q,%t)\n", f.GoName, rtAlias, f.ResolvedGoType(), f.Key, f.Sensitive)
 		} else if f.Parser != "" {
 			symbol, _ := parserSymbol(f.Parser)
-			p("value,err:=decodeRoot%s(e,options.%s);if err!=nil{return %sConfig{},err};c.%s=value\n", f.GoName, symbol, qual, f.GoName)
+			p("value,err:=decodeRoot%s(e,options.%s);if err!=nil{return %sConfig{},err}\n", f.GoName, symbol, qual)
+			if f.Sensitive {
+				p("if s,ok:=any(&value).(interface{SanitizeConfig()error});ok{if err:=s.SanitizeConfig();err!=nil{return %sConfig{},fmt.Errorf(\"sanitize %%s: failed\", %q)}}\n", qual, f.Key)
+				p("if v,ok:=any(&value).(interface{ValidateConfig()error});ok{if err:=v.ValidateConfig();err!=nil{return %sConfig{},fmt.Errorf(\"validate %%s: failed\", %q)}}\n", qual, f.Key)
+			} else {
+				p("if s,ok:=any(&value).(interface{SanitizeConfig()error});ok{if err:=s.SanitizeConfig();err!=nil{return %sConfig{},fmt.Errorf(\"sanitize %%s: %%w\", %q, err)}}\n", qual, f.Key)
+				p("if v,ok:=any(&value).(interface{ValidateConfig()error});ok{if err:=v.ValidateConfig();err!=nil{return %sConfig{},fmt.Errorf(\"validate %%s: %%w\", %q, err)}}\n", qual, f.Key)
+			}
+			p("c.%s=value\n", f.GoName)
 		} else {
 			p("value,err:=decodeRoot%s(ctx,r,e);if err!=nil{return %sConfig{},err}\n", f.GoName, qual)
 			if f.Sensitive {
@@ -931,7 +941,7 @@ func emitSectionStaticDecoders(p func(string, ...any), sec m.SectionDefinition, 
 		}
 		if f.Parser != "" {
 			symbol, _ := parserSymbol(f.Parser)
-			emitStaticParserDecoder(p, staticDecoderName(prefix, f.GoName), f.ResolvedGoType(), symbol+"Func", rtAlias, path+"."+f.Key, f.Sensitive)
+			emitStaticParserDecoder(p, staticDecoderName(prefix, f.GoName), f.ResolvedGoType(), ti, symbol+"Func", rtAlias, path+"."+f.Key, f.Sensitive)
 		} else {
 			emitStaticDecoder(p, staticDecoderName(prefix, f.GoName), f.ResolvedGoType(), ti, rtAlias, path+"."+f.Key, f.Sensitive)
 		}
