@@ -554,20 +554,21 @@ func (m *Migrations) Apply(d *%s.Document, targetVersion int) error {
 `, rtAlias, rtAlias)
 
 	// Sample function
-	p("// Sample returns a sample Document illustrating defaults as active entries\n" +
-		"// and examples as documentation comments.\n" +
-		"func Sample() *" + rtAlias + ".Document {\n" +
-		"	d := &" + rtAlias + ".Document{\n" +
-		"		Version: SchemaVersion,\n" +
-		"		HasVersion: true,\n" +
-		"		Items: []" + rtAlias + ".Item{\n" +
-		"			" + rtAlias + ".Version{},\n" +
-		"			" + rtAlias + ".Blank{},\n" +
-		"			" + rtAlias + ".Comment{Kind: " + rtAlias + ".UserComment, Text: \"Single # comments belong to you; ## documentation is schema-managed.\"},\n" +
-		"			" + rtAlias + ".Comment{Kind: " + rtAlias + ".DocumentationComment, Text: \"Examples below are comments, not active values or defaults.\"},\n" +
-		"			" + rtAlias + ".Blank{},\n" +
-		"		},\n" +
-		"	}\n")
+	p(`// Sample returns a sample Document illustrating defaults as active entries
+// and examples as documentation comments.
+func Sample() *%s.Document {
+	d := &%s.Document{
+		Version: SchemaVersion,
+		HasVersion: true,
+		Items: []%s.Item{
+			%s.Version{},
+			%s.Blank{},
+			%s.Comment{Kind: %s.UserComment, Text: "Single # comments belong to you; ## documentation is schema-managed."},
+			%s.Comment{Kind: %s.DocumentationComment, Text: "Examples below are comments, not active values or defaults."},
+			%s.Blank{},
+		},
+	}
+`, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias)
 
 	for _, f := range s.RootFields {
 		if f.InputOnly || f.RuntimeOnly || f.Deprecated {
