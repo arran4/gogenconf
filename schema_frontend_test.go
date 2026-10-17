@@ -130,6 +130,77 @@ end
 	}
 }
 
+func TestParseSchemaRootFields(t *testing.T) {
+	s, err := gogenconf.ParseSchema(strings.NewReader(`config for example-schema version 1
+
+version 1
+
+section root
+    section field name string
+        required true
+    end
+end
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.RootFields) != 1 || s.RootFields[0].Key != "name" || !s.RootFields[0].Required {
+		t.Fatalf("root fields = %#v", s.RootFields)
+	}
+	formatted := gogenconf.FormatSchema("example", s)
+	roundTrip, err := gogenconf.ParseSchema(strings.NewReader(formatted))
+	if err != nil || len(roundTrip.RootFields) != 1 || roundTrip.RootFields[0].Key != "name" {
+		t.Fatalf("root schema round trip failed: %#v, %v", roundTrip, err)
+	}
+	generated, err := codegen.GenerateAppAPI(*s, codegen.Options{Package: "appconfig", LibraryImport: "github.com/arran4/gogenconf"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Name string", `BindingValue(d, "", "name"`, "decodeRootName"} {
+		if !strings.Contains(string(generated), want) {
+			t.Fatalf("generated root decoder missing %q", want)
+		}
+	}
+}
+
+func TestParseSchemaRecursiveSections(t *testing.T) {
+	s, err := gogenconf.ParseSchema(strings.NewReader(`config for go2gentoo-schema version 1
+
+version 1
+
+section project
+    repeated true
+    go_type ProjectConfig
+    section field module_path string
+    end
+    section build
+        go_type BuildConfig
+        section field target string
+            required true
+        end
+        section field enabled bool
+            default true
+        end
+    end
+end
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Sections) != 1 || len(s.Sections[0].Children) != 1 {
+		t.Fatalf("recursive schema tree = %#v", s)
+	}
+	project, build := s.Sections[0], s.Sections[0].Children[0]
+	if !project.Repeated || project.Name != "project" || build.Name != "build" || build.GoType != "BuildConfig" || len(build.Fields) != 2 || !build.Fields[0].Required {
+		t.Fatalf("recursive schema definitions = %#v / %#v", project, build)
+	}
+	formatted := gogenconf.FormatSchema("go2gentoo", s)
+	roundTrip, err := gogenconf.ParseSchema(strings.NewReader(formatted))
+	if err != nil || len(roundTrip.Sections) != 1 || len(roundTrip.Sections[0].Children) != 1 || roundTrip.Sections[0].Children[0].Fields[0].Key != "target" {
+		t.Fatalf("recursive schema format round trip failed: %#v, %v\n%s", roundTrip, err, formatted)
+	}
+}
+
 func TestSchemaFrontendCodeGeneration(t *testing.T) {
 	input := `config for myapp-schema version 1
 
@@ -427,5 +498,48 @@ server {
 	fRoutes := sec.Fields[3]
 	if fRoutes.Key != "routes" || fRoutes.GoType != "[$]string" {
 		t.Errorf("fRoutes mismatch: %+v", fRoutes)
+	}
+}
+
+func TestFormatSchemaRootFieldsMetadataRoundTrip(t *testing.T) {
+	s := gogenconf.Schema{
+		Identity: "roundtrip-schema",
+		Version:  1,
+		RootFields: []gogenconf.Field{{
+			Key:                 "root_key",
+			GoName:              "RootKey",
+			GoType:              "string",
+			Examples:            []gogenconf.Expr{gogenconf.Literal{Value: "ex1"}},
+			Documentation:       []string{"root doc line"},
+			Policy:              gogenconf.ProviderBacked,
+			Environment:         "ROOT_ENV",
+			EnvironmentNonEmpty: true,
+		}},
+	}
+	formatted := gogenconf.FormatSchema("roundtrip", &s)
+	parsed, err := gogenconf.ParseSchema(strings.NewReader(formatted))
+	if err != nil {
+		t.Fatalf("ParseSchema failed: %v\nFormatted:\n%s", err, formatted)
+	}
+	if len(parsed.RootFields) != 1 {
+		t.Fatalf("expected 1 root field, got %d", len(parsed.RootFields))
+	}
+	rf := parsed.RootFields[0]
+	if rf.Key != "root_key" || rf.GoType != "string" {
+		t.Errorf("unexpected root field key/type: %+v", rf)
+	}
+	if rf.Policy != gogenconf.ProviderBacked {
+		t.Errorf("expected Policy %q, got %q", gogenconf.ProviderBacked, rf.Policy)
+	}
+	if rf.Environment != "ROOT_ENV" || !rf.EnvironmentNonEmpty {
+		t.Errorf("expected Environment ROOT_ENV (non-empty), got %q (non-empty=%v)", rf.Environment, rf.EnvironmentNonEmpty)
+	}
+	if len(rf.Examples) != 1 {
+		t.Errorf("expected 1 example, got %d", len(rf.Examples))
+	} else if lit, ok := rf.Examples[0].(gogenconf.Literal); !ok || lit.Value != "ex1" {
+		t.Errorf("expected example 'ex1', got %v", rf.Examples[0])
+	}
+	if len(rf.Documentation) != 1 || rf.Documentation[0] != "root doc line" {
+		t.Errorf("expected documentation ['root doc line'], got %v", rf.Documentation)
 	}
 }

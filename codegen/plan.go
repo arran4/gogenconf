@@ -177,23 +177,39 @@ func PlanFromSchema(s m.Schema, opts RuntimeOptions) (*Plan, error) {
 		}
 	}
 
-	for _, sec := range s.Sections {
-		for _, f := range sec.Fields {
-			if f.Policy == m.ProviderBacked {
-				hasProvider = true
-			}
-			if f.Environment != "" {
-				declarers["from_env"] = true
-			}
-			if f.Default != nil {
-				inspectExpr(f.Default)
-			}
-			for _, ex := range f.Examples {
-				if ex != nil {
-					inspectExpr(ex)
-				}
+	var inspectField func(f m.Field)
+	inspectField = func(f m.Field) {
+		if f.Policy == m.ProviderBacked {
+			hasProvider = true
+		}
+		if f.Environment != "" {
+			declarers["from_env"] = true
+		}
+		if f.Default != nil {
+			inspectExpr(f.Default)
+		}
+		for _, ex := range f.Examples {
+			if ex != nil {
+				inspectExpr(ex)
 			}
 		}
+	}
+
+	var inspectSection func(sec m.SectionDefinition)
+	inspectSection = func(sec m.SectionDefinition) {
+		for _, f := range sec.Fields {
+			inspectField(f)
+		}
+		for _, ch := range sec.Children {
+			inspectSection(ch)
+		}
+	}
+
+	for _, f := range s.RootFields {
+		inspectField(f)
+	}
+	for _, sec := range s.Sections {
+		inspectSection(sec)
 	}
 
 	if hasProvider {

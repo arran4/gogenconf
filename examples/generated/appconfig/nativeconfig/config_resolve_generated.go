@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -35,7 +36,25 @@ type LookupEnv func(string) (string, bool)
 // BindingValue encodes precedence explicitly: authored document, compatibility
 // environment, schema default. Enriched defaults retain transient provenance.
 func BindingValue(d *Document, section, key string, fallback Expr, env string, nonempty bool, lookup LookupEnv) Expr {
-	entry, _, present := d.Section(section).Entry(key)
+	var entry Entry
+	var present bool
+	if section == "" {
+		entry, _, present = d.Entry(key)
+	} else {
+		entry, _, present = d.Section(section).Entry(key)
+	}
+	return bindingEntryValue(entry, present, fallback, env, nonempty, lookup)
+}
+
+// SectionBindingValue applies the same authored/environment/default precedence
+// inside a nested native object. Generated static decoders use this narrow
+// helper rather than flattening recursive document paths.
+func SectionBindingValue(s *Section, key string, fallback Expr, env string, nonempty bool, lookup LookupEnv) Expr {
+	entry, _, present := s.Entry(key)
+	return bindingEntryValue(entry, present, fallback, env, nonempty, lookup)
+}
+
+func bindingEntryValue(entry Entry, present bool, fallback Expr, env string, nonempty bool, lookup LookupEnv) Expr {
 	if present && entry.Value != nil && !entry.Defaulted {
 		return entry.Value
 	}
@@ -51,15 +70,21 @@ func BindingValue(d *Document, section, key string, fallback Expr, env string, n
 }
 
 // ResolveField prevents a registered service error from disclosing a sensitive
-// value through generated binders or providers.
+// value through generated binders or providers while producing a structured ConfigError.
 func ResolveField[T any](ctx context.Context, r *Registry, e Expr, path string, sensitive bool) (T, error) {
 	v, err := Resolve[T](ctx, r, e)
 	if err != nil {
 		var zero T
+		cause := err
 		if sensitive {
-			return zero, fmt.Errorf("resolve %s: source resolution failed", path)
+			cause = errors.New("source resolution failed")
 		}
-		return zero, fmt.Errorf("resolve %s: %w", path, err)
+		return zero, &ConfigError{
+			Stage:  StageResolve,
+			Path:   path,
+			Source: SpanOf(e),
+			Err:    cause,
+		}
 	}
 	return v, nil
 }

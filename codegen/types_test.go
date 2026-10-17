@@ -18,6 +18,7 @@ func TestClassifyType(t *testing.T) {
 		typeStr   string
 		wantKind  codegen.TypeKind
 		wantSlice bool
+		wantMap   bool
 		wantPtr   bool
 		wantErr   bool
 	}{
@@ -39,6 +40,10 @@ func TestClassifyType(t *testing.T) {
 		{typeStr: "[]byte", wantKind: codegen.TypeKindBytes},
 		{typeStr: "[]string", wantKind: codegen.TypeKindString, wantSlice: true},
 		{typeStr: "[]int", wantKind: codegen.TypeKindInt, wantSlice: true},
+		{typeStr: "[$]int", wantKind: codegen.TypeKindInt, wantMap: true},
+		{typeStr: "map[string]int", wantKind: codegen.TypeKindInt, wantMap: true},
+		{typeStr: "map[string][]string", wantKind: codegen.TypeKindString, wantMap: true},
+		{typeStr: "[]map[string]int", wantKind: codegen.TypeKindInt, wantSlice: true},
 		{typeStr: "[]time.Duration", wantKind: codegen.TypeKindDuration, wantSlice: true},
 		{typeStr: "*int", wantKind: codegen.TypeKindInt, wantPtr: true},
 		{typeStr: "*string", wantKind: codegen.TypeKindString, wantPtr: true},
@@ -49,7 +54,6 @@ func TestClassifyType(t *testing.T) {
 		// Invalid / unsupported types
 		{typeStr: "complex128", wantErr: true},
 		{typeStr: "chan int", wantErr: true},
-		{typeStr: "map[string]int", wantErr: true},
 		{typeStr: "func()", wantErr: true},
 		{typeStr: "[4]int", wantErr: true},
 		{typeStr: "unexported_type", wantErr: true},
@@ -72,6 +76,9 @@ func TestClassifyType(t *testing.T) {
 		}
 		if ti.IsSlice != tt.wantSlice {
 			t.Errorf("ClassifyType(%q) IsSlice = %v, want %v", tt.typeStr, ti.IsSlice, tt.wantSlice)
+		}
+		if ti.IsMap != tt.wantMap {
+			t.Errorf("ClassifyType(%q) IsMap = %v, want %v", tt.typeStr, ti.IsMap, tt.wantMap)
 		}
 		if ti.IsPtr != tt.wantPtr {
 			t.Errorf("ClassifyType(%q) IsPtr = %v, want %v", tt.typeStr, ti.IsPtr, tt.wantPtr)
@@ -153,6 +160,8 @@ func TestStandaloneModuleTypesAndLifecycle(t *testing.T) {
 					{Key: "timeout", GoName: "Timeout", GoType: "time.Duration", Default: m.Literal{Value: "10s"}},
 					{Key: "tags", GoName: "Tags", GoType: "[]string", Default: m.Literal{Value: "web,api"}},
 					{Key: "allowed_ports", GoName: "AllowedPorts", GoType: "[]int", Default: m.Literal{Value: "80,443"}},
+					{Key: "routes", GoName: "Routes", GoType: "[$]int", Default: m.Map{Entries: []m.MapEntry{{Key: "http", Value: m.Literal{Value: "80"}}, {Key: "https", Value: m.Literal{Value: "443"}}}}},
+					{Key: "header_sets", GoName: "HeaderSets", GoType: "map[string][]string", Default: m.Map{Entries: []m.MapEntry{{Key: "accept", Value: m.List{Items: []m.Expr{m.Literal{Value: "json"}, m.Literal{Value: "text"}}}}}}},
 					{Key: "retries", GoName: "Retries", GoType: "*int", Default: m.Literal{Value: "3"}},
 					{Key: "optional_flag", GoName: "OptionalFlag", GoType: "*bool"},
 					{Key: "sanitized_path", GoName: "SanitizedPath", GoType: "SanitizedString", Default: m.Literal{Value: "/my//path/"}},
@@ -274,6 +283,12 @@ func TestTypesAndLifecycle(t *testing.T) {
 	}
 	if len(cfg.App.AllowedPorts) != 2 || cfg.App.AllowedPorts[0] != 80 || cfg.App.AllowedPorts[1] != 443 {
 		t.Errorf("AllowedPorts = %v, want [80, 443]", cfg.App.AllowedPorts)
+	}
+	if cfg.App.Routes["http"] != 80 || cfg.App.Routes["https"] != 443 {
+		t.Errorf("Routes = %v, want http=80 and https=443", cfg.App.Routes)
+	}
+	if got := cfg.App.HeaderSets["accept"]; len(got) != 2 || got[0] != "json" || got[1] != "text" {
+		t.Errorf("HeaderSets = %v, want accept=[json text]", cfg.App.HeaderSets)
 	}
 	if cfg.App.Retries == nil || *cfg.App.Retries != 3 {
 		t.Errorf("Retries = %v, want &3", cfg.App.Retries)

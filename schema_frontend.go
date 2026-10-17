@@ -80,7 +80,14 @@ func ParseSchemaDocument(d *Document) (*Schema, error) {
 		if err != nil {
 			return nil, err
 		}
-		s.Sections = append(s.Sections, secDef)
+		if sec.Name == "root" {
+			if secDef.Repeated || len(secDef.Documentation) != 0 || secDef.GoName != "Root" || secDef.GoType != "RootConfig" {
+				return nil, &ConfigError{Stage: StageValidate, Source: sec.Span, Err: fmt.Errorf("root schema declaration supports fields only")}
+			}
+			s.RootFields = append(s.RootFields, secDef.Fields...)
+		} else {
+			s.Sections = append(s.Sections, secDef)
+		}
 	}
 
 	return s, nil
@@ -165,15 +172,50 @@ func parseSectionDefinition(sec *Section) (SectionDefinition, error) {
 				}
 			}
 		case *Section:
-			field, err := parseFieldDefinition(v)
-			if err != nil {
-				return secDef, err
+			// A field declaration carries a type in its section name (normally
+			// `field <key> <type>`). A one-component child is a recursive
+			// schema object and is deliberately kept structural rather than
+			// flattened into a synthetic dotted field key.
+			if isFieldDefinitionSection(v) {
+				field, err := parseFieldDefinition(v)
+				if err != nil {
+					return secDef, err
+				}
+				secDef.Fields = append(secDef.Fields, field)
+			} else {
+				child, err := parseSectionDefinition(v)
+				if err != nil {
+					return secDef, err
+				}
+				secDef.Children = append(secDef.Children, child)
 			}
-			secDef.Fields = append(secDef.Fields, field)
 		}
 	}
 
 	return secDef, nil
+}
+
+func isFieldDefinitionSection(sec *Section) bool {
+	if strings.HasPrefix(sec.Name, "field ") || len(strings.Fields(sec.Name)) >= 2 {
+		return true
+	}
+	// Brace field syntax is represented as `key { type { metadata } }` or
+	// `key { go_type T; metadata }` by the canonical parser. A structural
+	// child, in contrast, owns field/child sections of its own.
+	if len(sec.Sections) == 1 && !strings.HasPrefix(sec.Sections[0].Name, "field ") && isValidGoType(sec.Sections[0].Name) && len(sec.Sections[0].Sections) == 0 {
+		return true
+	}
+	if len(sec.Sections) == 0 {
+		for _, item := range sec.Items {
+			if entry, ok := item.(Entry); ok {
+				switch entry.Key {
+				case "go_type", "type", "default", "required", "sensitive", "runtime_only", "input_only", "deprecated", "policy", "env", "env_non_empty", "example":
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func parseFieldDefinition(sec *Section) (Field, error) {
@@ -466,6 +508,51 @@ func FormatSchema(identity string, s *Schema) string {
 
 	fmt.Fprintf(&b, "config for %s version 1\n\n", identity)
 	fmt.Fprintf(&b, "version %d\n\n", s.Version)
+	if len(s.RootFields) > 0 {
+		b.WriteString("section root\n")
+		for _, f := range s.RootFields {
+			b.WriteString("\n")
+			fmt.Fprintf(&b, "    section field %s %s\n", f.Key, f.GoType)
+			if f.GoName != "" && f.GoName != exportIdentifier(f.Key) {
+				fmt.Fprintf(&b, "        go_name %s\n", f.GoName)
+			}
+			if f.Default != nil {
+				fmt.Fprintf(&b, "        default %s\n", FormatExpr(f.Default))
+			}
+			for _, ex := range f.Examples {
+				fmt.Fprintf(&b, "        example %s\n", FormatExpr(ex))
+			}
+			for _, doc := range f.Documentation {
+				fmt.Fprintf(&b, "        ## %s\n", doc)
+			}
+			if f.Required {
+				b.WriteString("        required true\n")
+			}
+			if f.Sensitive {
+				b.WriteString("        sensitive true\n")
+			}
+			if f.RuntimeOnly {
+				b.WriteString("        runtime_only true\n")
+			}
+			if f.InputOnly {
+				b.WriteString("        input_only true\n")
+			}
+			if f.Deprecated {
+				b.WriteString("        deprecated true\n")
+			}
+			if f.Policy != "" {
+				fmt.Fprintf(&b, "        policy %s\n", f.Policy)
+			}
+			if f.Environment != "" {
+				fmt.Fprintf(&b, "        env %s\n", f.Environment)
+			}
+			if f.EnvironmentNonEmpty {
+				b.WriteString("        env_non_empty true\n")
+			}
+			b.WriteString("    end\n")
+		}
+		b.WriteString("end\n\n")
+	}
 
 	for _, sec := range s.Sections {
 		fmt.Fprintf(&b, "section %s\n", sec.Name)
@@ -530,18 +617,95 @@ func FormatSchema(identity string, s *Schema) string {
 			}
 			b.WriteString("    end\n")
 		}
+		for _, child := range sec.Children {
+			b.WriteString("\n")
+			formatSchemaSection(&b, child, "    ")
+		}
 		b.WriteString("end\n\n")
 	}
 
 	return b.String()
 }
 
+// formatSchemaSection emits one recursively nested schema section.  Keeping
+// indentation here, rather than encoding a dotted path, mirrors the native
+// document tree that generated decoders bind against.
+func formatSchemaSection(b *strings.Builder, sec SectionDefinition, indent string) {
+	fmt.Fprintf(b, "%ssection %s\n", indent, sec.Name)
+	inner := indent + "    "
+	if sec.GoName != "" && sec.GoName != exportIdentifier(sec.Name) {
+		fmt.Fprintf(b, "%sgo_name %s\n", inner, sec.GoName)
+	}
+	if sec.GoType != "" && sec.GoType != exportIdentifier(sec.Name)+"Config" {
+		fmt.Fprintf(b, "%sgo_type %s\n", inner, sec.GoType)
+	}
+	if sec.Repeated {
+		fmt.Fprintf(b, "%srepeated true\n", inner)
+	}
+	if len(sec.ExampleNames) > 0 {
+		quoted := make([]string, len(sec.ExampleNames))
+		for i, name := range sec.ExampleNames {
+			quoted[i] = strconv.Quote(name)
+		}
+		fmt.Fprintf(b, "%sexample_names [%s]\n", inner, strings.Join(quoted, ", "))
+	}
+	for _, doc := range sec.Documentation {
+		fmt.Fprintf(b, "%s## %s\n", inner, doc)
+	}
+	for _, f := range sec.Fields {
+		fmt.Fprintf(b, "\n%ssection field %s %s\n", inner, f.Key, f.GoType)
+		fieldIndent := inner + "    "
+		if f.GoName != "" && f.GoName != exportIdentifier(f.Key) {
+			fmt.Fprintf(b, "%sgo_name %s\n", fieldIndent, f.GoName)
+		}
+		if f.Default != nil {
+			fmt.Fprintf(b, "%sdefault %s\n", fieldIndent, FormatExpr(f.Default))
+		}
+		for _, ex := range f.Examples {
+			fmt.Fprintf(b, "%sexample %s\n", fieldIndent, FormatExpr(ex))
+		}
+		for _, doc := range f.Documentation {
+			fmt.Fprintf(b, "%s## %s\n", fieldIndent, doc)
+		}
+		if f.Required {
+			fmt.Fprintf(b, "%srequired true\n", fieldIndent)
+		}
+		if f.Sensitive {
+			fmt.Fprintf(b, "%ssensitive true\n", fieldIndent)
+		}
+		if f.RuntimeOnly {
+			fmt.Fprintf(b, "%sruntime_only true\n", fieldIndent)
+		}
+		if f.InputOnly {
+			fmt.Fprintf(b, "%sinput_only true\n", fieldIndent)
+		}
+		if f.Deprecated {
+			fmt.Fprintf(b, "%sdeprecated true\n", fieldIndent)
+		}
+		if f.Policy != "" {
+			fmt.Fprintf(b, "%spolicy %s\n", fieldIndent, f.Policy)
+		}
+		if f.Environment != "" {
+			fmt.Fprintf(b, "%senv %s\n", fieldIndent, f.Environment)
+		}
+		if f.EnvironmentNonEmpty {
+			fmt.Fprintf(b, "%senv_non_empty true\n", fieldIndent)
+		}
+		fmt.Fprintf(b, "%send\n", inner)
+	}
+	for _, child := range sec.Children {
+		b.WriteString("\n")
+		formatSchemaSection(b, child, inner)
+	}
+	fmt.Fprintf(b, "%send\n", indent)
+}
+
 func isValidGoType(t string) bool {
-	if t == "true" || t == "false" || t == "" {
+	if t == "true" || t == "false" || t == "" || strings.ContainsAny(t, " \t") {
 		return false
 	}
 	elem, _ := ParseType(t)
-	if elem == "" || elem == "true" || elem == "false" {
+	if elem == "" || elem == "true" || elem == "false" || strings.ContainsAny(elem, " \t") {
 		return false
 	}
 	first := rune(elem[0])

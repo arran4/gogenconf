@@ -48,101 +48,163 @@ func GenerateMarkdown(s *m.Schema, opts DocOptions) ([]byte, error) {
 	fmt.Fprintf(&b, "# %s\n\n", title)
 	fmt.Fprintf(&b, "Configuration specification version: **%d**\n\n", s.Version)
 
-	if len(s.Sections) > 0 {
+	if len(s.RootFields) > 0 || len(s.Sections) > 0 {
 		fmt.Fprintf(&b, "## Contents\n\n")
+		if len(s.RootFields) > 0 {
+			fmt.Fprintf(&b, "- [Root Fields](#root-fields)\n")
+		}
 		for _, sec := range s.Sections {
 			fmt.Fprintf(&b, "- [%s](#%s)\n", sec.Name, strings.ToLower(sec.Name))
 		}
 		fmt.Fprintf(&b, "\n")
 	}
 
+	if len(s.RootFields) > 0 {
+		fmt.Fprintf(&b, "## Root Fields\n\n")
+		fmt.Fprintf(&b, "| Field | Type | Default | Attributes | Description |\n")
+		fmt.Fprintf(&b, "| --- | --- | --- | --- | --- |\n")
+
+		for _, f := range s.RootFields {
+			defStr := "-"
+			if f.Default != nil {
+				defStr = "`" + m.FormatExpr(f.Default) + "`"
+			}
+
+			var attrs []string
+			if f.Required {
+				attrs = append(attrs, "**Required**")
+			}
+			if f.Sensitive {
+				attrs = append(attrs, "Sensitive")
+			}
+			if f.RuntimeOnly {
+				attrs = append(attrs, "RuntimeOnly")
+			}
+			if f.InputOnly {
+				attrs = append(attrs, "InputOnly")
+			}
+			if f.Deprecated {
+				attrs = append(attrs, "Deprecated")
+			}
+			if f.Policy != "" {
+				attrs = append(attrs, "Policy: "+string(f.Policy))
+			}
+			if f.Environment != "" {
+				attrs = append(attrs, "Env: `"+f.Environment+"`")
+			}
+
+			attrStr := "-"
+			if len(attrs) > 0 {
+				attrStr = strings.Join(attrs, ", ")
+			}
+
+			docStr := strings.Join(f.Documentation, " ")
+			if docStr == "" {
+				docStr = "-"
+			}
+
+			fmt.Fprintf(&b, "| `%s` | `%s` | %s | %s | %s |\n",
+				f.Key, f.ResolvedGoType(), defStr, attrStr, docStr)
+		}
+		fmt.Fprintf(&b, "\n")
+	}
+
 	for _, sec := range s.Sections {
-		repNote := ""
-		if sec.Repeated {
-			repNote = " *(repeated section)*"
-		}
-		fmt.Fprintf(&b, "## %s%s\n\n", sec.Name, repNote)
-
-		for _, doc := range sec.Documentation {
-			fmt.Fprintf(&b, "%s\n\n", doc)
-		}
-
-		if sec.Repeated && len(sec.ExampleNames) > 0 {
-			fmt.Fprintf(&b, "Example instances: `%s`\n\n", strings.Join(sec.ExampleNames, "`, `"))
-		}
-
-		if len(sec.Fields) > 0 {
-			fmt.Fprintf(&b, "| Field | Type | Default | Attributes | Description |\n")
-			fmt.Fprintf(&b, "| --- | --- | --- | --- | --- |\n")
-
-			for _, f := range sec.Fields {
-				defStr := "-"
-				if f.Default != nil {
-					defStr = "`" + m.FormatExpr(f.Default) + "`"
-				}
-
-				var attrs []string
-				if f.Required {
-					attrs = append(attrs, "**Required**")
-				}
-				if f.Sensitive {
-					attrs = append(attrs, "Sensitive")
-				}
-				if f.RuntimeOnly {
-					attrs = append(attrs, "RuntimeOnly")
-				}
-				if f.InputOnly {
-					attrs = append(attrs, "InputOnly")
-				}
-				if f.Deprecated {
-					attrs = append(attrs, "Deprecated")
-				}
-				if f.Policy != "" {
-					attrs = append(attrs, "Policy: "+string(f.Policy))
-				}
-				if f.Environment != "" {
-					attrs = append(attrs, "Env: `"+f.Environment+"`")
-				}
-
-				attrStr := "-"
-				if len(attrs) > 0 {
-					attrStr = strings.Join(attrs, ", ")
-				}
-
-				docStr := strings.Join(f.Documentation, " ")
-				if docStr == "" {
-					docStr = "-"
-				}
-
-				fmt.Fprintf(&b, "| `%s` | `%s` | %s | %s | %s |\n",
-					f.Key, f.ResolvedGoType(), defStr, attrStr, docStr)
-			}
-			fmt.Fprintf(&b, "\n")
-
-			// Check for examples
-			hasExamples := false
-			for _, f := range sec.Fields {
-				if len(f.Examples) > 0 {
-					hasExamples = true
-					break
-				}
-			}
-
-			if hasExamples {
-				fmt.Fprintf(&b, "### %s Examples\n\n```text\nsection %s\n", sec.Name, sec.Name)
-				for _, f := range sec.Fields {
-					for _, ex := range f.Examples {
-						if ex != nil {
-							fmt.Fprintf(&b, "    %s %s\n", f.Key, m.FormatExpr(ex))
-						}
-					}
-				}
-				fmt.Fprintf(&b, "end\n```\n\n")
-			}
-		}
+		generateMarkdownSection(&b, sec, sec.Name, 2)
 	}
 
 	return []byte(b.String()), nil
+}
+
+func generateMarkdownSection(b *strings.Builder, sec m.SectionDefinition, path string, level int) {
+	repNote := ""
+	if sec.Repeated {
+		repNote = " *(repeated section)*"
+	}
+	headingPrefix := strings.Repeat("#", level)
+	fmt.Fprintf(b, "%s %s%s\n\n", headingPrefix, path, repNote)
+
+	for _, doc := range sec.Documentation {
+		fmt.Fprintf(b, "%s\n\n", doc)
+	}
+
+	if sec.Repeated && len(sec.ExampleNames) > 0 {
+		fmt.Fprintf(b, "Example instances: `%s`\n\n", strings.Join(sec.ExampleNames, "`, `"))
+	}
+
+	if len(sec.Fields) > 0 {
+		fmt.Fprintf(b, "| Field | Type | Default | Attributes | Description |\n")
+		fmt.Fprintf(b, "| --- | --- | --- | --- | --- |\n")
+
+		for _, f := range sec.Fields {
+			defStr := "-"
+			if f.Default != nil {
+				defStr = "`" + m.FormatExpr(f.Default) + "`"
+			}
+
+			var attrs []string
+			if f.Required {
+				attrs = append(attrs, "**Required**")
+			}
+			if f.Sensitive {
+				attrs = append(attrs, "Sensitive")
+			}
+			if f.RuntimeOnly {
+				attrs = append(attrs, "RuntimeOnly")
+			}
+			if f.InputOnly {
+				attrs = append(attrs, "InputOnly")
+			}
+			if f.Deprecated {
+				attrs = append(attrs, "Deprecated")
+			}
+			if f.Policy != "" {
+				attrs = append(attrs, "Policy: "+string(f.Policy))
+			}
+			if f.Environment != "" {
+				attrs = append(attrs, "Env: `"+f.Environment+"`")
+			}
+
+			attrStr := "-"
+			if len(attrs) > 0 {
+				attrStr = strings.Join(attrs, ", ")
+			}
+
+			docStr := strings.Join(f.Documentation, " ")
+			if docStr == "" {
+				docStr = "-"
+			}
+
+			fmt.Fprintf(b, "| `%s` | `%s` | %s | %s | %s |\n",
+				f.Key, f.ResolvedGoType(), defStr, attrStr, docStr)
+		}
+		fmt.Fprintf(b, "\n")
+
+		hasExamples := false
+		for _, f := range sec.Fields {
+			if len(f.Examples) > 0 {
+				hasExamples = true
+				break
+			}
+		}
+
+		if hasExamples {
+			fmt.Fprintf(b, "%s# %s Examples\n\n```text\nsection %s\n", headingPrefix, sec.Name, sec.Name)
+			for _, f := range sec.Fields {
+				for _, ex := range f.Examples {
+					if ex != nil {
+						fmt.Fprintf(b, "    %s %s\n", f.Key, m.FormatExpr(ex))
+					}
+				}
+			}
+			fmt.Fprintf(b, "end\n```\n\n")
+		}
+	}
+
+	for _, child := range sec.Children {
+		childPath := path + "." + child.Name
+		generateMarkdownSection(b, child, childPath, level+1)
+	}
 }
 
 // GenerateManPage generates a roff/troff section 5 man page from schema metadata.
@@ -186,17 +248,9 @@ func GenerateManPage(s *m.Schema, opts ManOptions) ([]byte, error) {
 	fmt.Fprintf(&b, "%s is configured using a versioned declarative configuration file format.\n", app)
 	fmt.Fprintf(&b, ".SH SECTIONS\n")
 
-	for _, sec := range s.Sections {
-		rep := ""
-		if sec.Repeated {
-			rep = " (repeated)"
-		}
-		fmt.Fprintf(&b, ".SS %s%s\n", sec.Name, rep)
-		for _, doc := range sec.Documentation {
-			fmt.Fprintf(&b, "%s\n.br\n", doc)
-		}
-
-		for _, f := range sec.Fields {
+	if len(s.RootFields) > 0 {
+		fmt.Fprintf(&b, ".SS Root Fields\n")
+		for _, f := range s.RootFields {
 			attrs := []string{f.ResolvedGoType()}
 			if f.Required {
 				attrs = append(attrs, "required")
@@ -221,6 +275,10 @@ func GenerateManPage(s *m.Schema, opts ManOptions) ([]byte, error) {
 				}
 			}
 		}
+	}
+
+	for _, sec := range s.Sections {
+		generateManSection(&b, sec, sec.Name)
 	}
 
 	fmt.Fprintf(&b, ".SH SEE ALSO\n")
@@ -346,4 +404,45 @@ func (p *DocPlan) Execute(opts DocProjectOptions) error {
 	}
 
 	return p.Files.WriteToDir(outDir)
+}
+
+func generateManSection(b *strings.Builder, sec m.SectionDefinition, path string) {
+	rep := ""
+	if sec.Repeated {
+		rep = " (repeated)"
+	}
+	fmt.Fprintf(b, ".SS %s%s\n", path, rep)
+	for _, doc := range sec.Documentation {
+		fmt.Fprintf(b, "%s\n.br\n", doc)
+	}
+
+	for _, f := range sec.Fields {
+		attrs := []string{f.ResolvedGoType()}
+		if f.Required {
+			attrs = append(attrs, "required")
+		}
+		if f.Default != nil {
+			attrs = append(attrs, "default: "+m.FormatExpr(f.Default))
+		}
+		if f.Sensitive {
+			attrs = append(attrs, "sensitive")
+		}
+		if f.Environment != "" {
+			attrs = append(attrs, "env: "+f.Environment)
+		}
+
+		fmt.Fprintf(b, ".TP\n.B %s \\fR(%s)\\fR\n", f.Key, strings.Join(attrs, ", "))
+		for _, doc := range f.Documentation {
+			fmt.Fprintf(b, "%s\n", doc)
+		}
+		for _, ex := range f.Examples {
+			if ex != nil {
+				fmt.Fprintf(b, "Example: \\fI%s %s\\fR\n.br\n", f.Key, m.FormatExpr(ex))
+			}
+		}
+	}
+
+	for _, child := range sec.Children {
+		generateManSection(b, child, path+"."+child.Name)
+	}
 }

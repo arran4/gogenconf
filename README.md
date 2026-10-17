@@ -443,6 +443,22 @@ on that schema field. Bind the ordinary endpoint eagerly while retaining
 can read changed file data; environment arguments can also change at resolution
 time. Only the declaration is snapshotted, not its source environment or bytes.
 
+### Static schema-directed generated decoding
+
+Generated application binders decode each known field from the canonical
+unresolved `Document`/`Expr` representation through generated, field-specific
+functions. Scalars, optional pointers, ordered lists, and string-keyed maps
+are converted without reflection-based struct population. Collection items keep
+their own source spans; conversion failures are returned as `ConfigError` with
+`StageConvert`, field path, and redacted sensitive causes.
+
+The unresolved document remains the preservation and editing representation:
+comments, duplicate authored declarations, unknown material in non-strict mode,
+and provenance are not discarded merely by loading typed application values.
+Resolver calls remain a deliberately narrow source bridge; provider-backed
+fields remain lazy. Application-specific custom expression adapters are a
+separate generated extension boundary, rather than an implicit plugin system.
+
 Inspection and persistence are deliberately different: `InspectionDocument` is
 a redacted display copy, not a round-trip save representation. Formatting the
 original document preserves even authored sensitive literals. A display-safe
