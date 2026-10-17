@@ -239,7 +239,10 @@ func Resolve(ctx context.Context, d *nativeconfig.Document, r *nativeconfig.Regi
 		}
 		c.Workers = append(c.Workers, v)
 	}
-	if group := d.Section("worker"); group != nil {
+	for _, group := range d.Sections {
+		if group.Name != "worker" || !group.Brace {
+			continue
+		}
 		for _, section := range group.Sections {
 			var v WorkerConfig
 			v.Name = section.Name
@@ -249,6 +252,16 @@ func Resolve(ctx context.Context, d *nativeconfig.Document, r *nativeconfig.Regi
 					decoded, err := decodeWorkersConcurrency(ctx, r, e)
 					if err != nil {
 						return Config{}, err
+					}
+					if s, ok := any(&decoded).(interface{ SanitizeConfig() error }); ok {
+						if err := s.SanitizeConfig(); err != nil {
+							return Config{}, fmt.Errorf("sanitize %s: %w", "worker.concurrency", err)
+						}
+					}
+					if v, ok := any(&decoded).(interface{ ValidateConfig() error }); ok {
+						if err := v.ValidateConfig(); err != nil {
+							return Config{}, fmt.Errorf("validate %s: %w", "worker.concurrency", err)
+						}
 					}
 					v.Concurrency = decoded
 				}
@@ -450,9 +463,11 @@ func Enrich(d *nativeconfig.Document) error {
 			enrichSection_Workers(s)
 		}
 	}
-	if group := d.Section("worker"); group != nil && group.Brace {
-		for _, s := range group.Sections {
-			enrichSection_Workers(s)
+	for _, group := range d.Sections {
+		if group.Name == "worker" && group.Brace {
+			for _, s := range group.Sections {
+				enrichSection_Workers(s)
+			}
 		}
 	}
 	return nil
@@ -463,9 +478,27 @@ func enrichSection_Service(s *nativeconfig.Section) {
 	}
 }
 
+func inspectSection_Service(s *nativeconfig.Section) {
+	if s == nil {
+		return
+	}
+	for i, item := range s.Items {
+		if entry, ok := item.(nativeconfig.Entry); ok && entry.Key == "api_key" {
+			entry.Value = nativeconfig.Literal{Value: "[REDACTED]"}
+			s.Items[i] = entry
+		}
+	}
+}
+
 func enrichSection_Workers(s *nativeconfig.Section) {
 	if _, _, ok := s.Entry("concurrency"); !ok {
 		s.Items = append(s.Items, nativeconfig.Entry{Key: "concurrency", Value: nativeconfig.Literal{Value: "4"}, Defaulted: true})
+	}
+}
+
+func inspectSection_Workers(s *nativeconfig.Section) {
+	if s == nil {
+		return
 	}
 }
 
@@ -692,28 +725,22 @@ func Inspect(d *nativeconfig.Document) *nativeconfig.Document {
 			cloned.Items[i] = entry
 		}
 	}
-	var inspectSection func(s *nativeconfig.Section, path string)
-	inspectSection = func(s *nativeconfig.Section, path string) {
-		for i, item := range s.Items {
-			if entry, ok := item.(nativeconfig.Entry); ok && IsSensitive(path, entry.Key) {
-				entry.Value = nativeconfig.Literal{Value: "[REDACTED]"}
-				s.Items[i] = entry
-			}
-		}
-		for _, child := range s.Sections {
-			childPath := path
-			if child.Name != "" {
-				if childPath != "" {
-					childPath += "." + child.Name
-				} else {
-					childPath = child.Name
-				}
-			}
-			inspectSection(child, childPath)
+	for _, s := range cloned.Sections {
+		if s.Name == "service" {
+			inspectSection_Service(s)
 		}
 	}
 	for _, s := range cloned.Sections {
-		inspectSection(s, s.Name)
+		if strings.HasPrefix(s.Name, "worker ") {
+			inspectSection_Workers(s)
+		}
+	}
+	for _, group := range cloned.Sections {
+		if group.Name == "worker" && group.Brace {
+			for _, s := range group.Sections {
+				inspectSection_Workers(s)
+			}
+		}
 	}
 	return cloned
 }
@@ -749,9 +776,7 @@ func normalizeSectionPath(section string) string {
 				out = append(out, "worker")
 				scope = "worker"
 				idx++
-				if idx < len(parts) {
-					idx++
-				}
+				idx = len(parts)
 			default:
 				out = append(out, tok)
 				idx++

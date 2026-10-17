@@ -500,3 +500,46 @@ server {
 		t.Errorf("fRoutes mismatch: %+v", fRoutes)
 	}
 }
+
+func TestFormatSchemaRootFieldsMetadataRoundTrip(t *testing.T) {
+	s := gogenconf.Schema{
+		Identity: "roundtrip-schema",
+		Version:  1,
+		RootFields: []gogenconf.Field{{
+			Key:                 "root_key",
+			GoName:              "RootKey",
+			GoType:              "string",
+			Examples:            []gogenconf.Expr{gogenconf.Literal{Value: "ex1"}},
+			Documentation:       []string{"root doc line"},
+			Policy:              gogenconf.ProviderBacked,
+			Environment:         "ROOT_ENV",
+			EnvironmentNonEmpty: true,
+		}},
+	}
+	formatted := gogenconf.FormatSchema("roundtrip", &s)
+	parsed, err := gogenconf.ParseSchema(strings.NewReader(formatted))
+	if err != nil {
+		t.Fatalf("ParseSchema failed: %v\nFormatted:\n%s", err, formatted)
+	}
+	if len(parsed.RootFields) != 1 {
+		t.Fatalf("expected 1 root field, got %d", len(parsed.RootFields))
+	}
+	rf := parsed.RootFields[0]
+	if rf.Key != "root_key" || rf.GoType != "string" {
+		t.Errorf("unexpected root field key/type: %+v", rf)
+	}
+	if rf.Policy != gogenconf.ProviderBacked {
+		t.Errorf("expected Policy %q, got %q", gogenconf.ProviderBacked, rf.Policy)
+	}
+	if rf.Environment != "ROOT_ENV" || !rf.EnvironmentNonEmpty {
+		t.Errorf("expected Environment ROOT_ENV (non-empty), got %q (non-empty=%v)", rf.Environment, rf.EnvironmentNonEmpty)
+	}
+	if len(rf.Examples) != 1 {
+		t.Errorf("expected 1 example, got %d", len(rf.Examples))
+	} else if lit, ok := rf.Examples[0].(gogenconf.Literal); !ok || lit.Value != "ex1" {
+		t.Errorf("expected example 'ex1', got %v", rf.Examples[0])
+	}
+	if len(rf.Documentation) != 1 || rf.Documentation[0] != "root doc line" {
+		t.Errorf("expected documentation ['root doc line'], got %v", rf.Documentation)
+	}
+}

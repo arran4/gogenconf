@@ -296,6 +296,9 @@ func emitTypedDefaultValueBody(p func(string, ...any), dest string, ti TypeInfo,
 	if ti.IsSlice {
 		itemInfo := ti
 		itemInfo.GoType, itemInfo.IsSlice = ti.ElemType, false
+		if ti.Element != nil {
+			itemInfo = *ti.Element
+		}
 		p("defaultItems:=strings.Split(%s,\",\");%s=make(%s,0,len(defaultItems));for _,defaultItem:=range defaultItems{var defaultValue %s;", raw, dest, ti.GoType, ti.ElemType)
 		emitTypedDefaultValueBody(p, "defaultValue", itemInfo, "defaultItem", path, sensitive)
 		p("%s=append(%s,defaultValue)};", dest, dest)
@@ -478,6 +481,9 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 			continue
 		}
 		ti, _ := ClassifyType(f.GoType)
+		if ti.IsMap {
+			continue
+		}
 		if v, ok := f.Default.(m.Literal); ok {
 			emitTypedDefaultValue(p, "c."+f.GoName, ti, strconv.Quote(v.Value), f.Key, f.Sensitive)
 		}
@@ -501,6 +507,9 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 			}
 			dest := "c." + sec.GoName + "." + f.GoName
 			ti, _ := ClassifyType(f.GoType)
+			if ti.IsMap {
+				continue
+			}
 			if v, ok := f.Default.(m.Literal); ok {
 				emitTypedDefaultValue(p, dest, ti, strconv.Quote(v.Value), sec.Name+"."+f.Key, f.Sensitive)
 			}
@@ -608,7 +617,7 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 			// container named project with a child named lxa. Keep legacy
 			// `section project lxa` support above, then bind canonical named
 			// children without flattening their identity into a string key.
-			p("if group:=d.Section(%q);group!=nil{for _,section:=range group.Sections{var v %s%s;v.Name=section.Name\n", sec.Name, qual, sec.GoType)
+			p("for _,group:=range d.Sections{if group.Name!=%q||!group.Brace{continue};for _,section:=range group.Sections{var v %s%s;v.Name=section.Name\n", sec.Name, qual, sec.GoType)
 			if err := emitSectionValueResolve(p, sec, "section", "v", sec.GoName, sec.Name, qual, rtAlias); err != nil {
 				return nil, err
 			}
@@ -687,7 +696,7 @@ func emitNestedSectionResolve(p func(string, ...any), parent m.SectionDefinition
 				return err
 			}
 			p("%s=append(%s,value)}}\n", childDest, childDest)
-			p("if %s!=nil{if group:=%s.Section(%q);group!=nil{for _,%s:=range group.Sections{var value %s%s;value.Name=%s.Name\n", parentExpr, parentExpr, child.Name, childVar, qual, child.GoType, childVar)
+			p("if %s!=nil{for _,group:=range %s.Sections{if group.Name!=%q||!group.Brace{continue};for _,%s:=range group.Sections{var value %s%s;value.Name=%s.Name\n", parentExpr, parentExpr, child.Name, childVar, qual, child.GoType, childVar)
 			if err := emitSectionValueResolve(p, child, childVar, "value", prefix+child.GoName, path+"."+child.Name, qual, rtAlias); err != nil {
 				return err
 			}
@@ -720,7 +729,15 @@ func emitSectionValueResolve(p func(string, ...any), sec m.SectionDefinition, se
 		if f.Policy == m.ProviderBacked {
 			p("%s.%s=%s.FieldProvider[%s](r,e,%q,%t)\n", dest, f.GoName, rtAlias, f.ResolvedGoType(), path+"."+f.Key, f.Sensitive)
 		} else {
-			p("decoded,err:=decode%s%s(ctx,r,e);if err!=nil{return %sConfig{},err};%s.%s=decoded\n", prefix, f.GoName, qual, dest, f.GoName)
+			p("decoded,err:=decode%s%s(ctx,r,e);if err!=nil{return %sConfig{},err}\n", prefix, f.GoName, qual)
+			if f.Sensitive {
+				p("if s,ok:=any(&decoded).(interface{SanitizeConfig()error});ok{if err:=s.SanitizeConfig();err!=nil{return %sConfig{},fmt.Errorf(\"sanitize %%s: failed\", %q)}}\n", qual, path+"."+f.Key)
+				p("if v,ok:=any(&decoded).(interface{ValidateConfig()error});ok{if err:=v.ValidateConfig();err!=nil{return %sConfig{},fmt.Errorf(\"validate %%s: failed\", %q)}}\n", qual, path+"."+f.Key)
+			} else {
+				p("if s,ok:=any(&decoded).(interface{SanitizeConfig()error});ok{if err:=s.SanitizeConfig();err!=nil{return %sConfig{},fmt.Errorf(\"sanitize %%s: %%w\", %q, err)}}\n", qual, path+"."+f.Key)
+				p("if v,ok:=any(&decoded).(interface{ValidateConfig()error});ok{if err:=v.ValidateConfig();err!=nil{return %sConfig{},fmt.Errorf(\"validate %%s: %%w\", %q, err)}}\n", qual, path+"."+f.Key)
+			}
+			p("%s.%s=decoded\n", dest, f.GoName)
 		}
 		p("}}\n")
 	}

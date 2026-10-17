@@ -581,16 +581,25 @@ func matchSectionDef(defs []SectionDefinition, tokens []string) *SectionDefiniti
 			}
 			rest := tokens[1:]
 			if def.Repeated && len(rest) > 0 {
-				isChild := false
-				for _, ch := range def.Children {
-					if ch.Name == rest[0] {
-						isChild = true
+				if len(def.Children) == 0 {
+					return def
+				}
+				var childMatch *SectionDefinition
+				for j := 0; j < len(rest); j++ {
+					if m := matchSectionDef(def.Children, rest[j:]); m != nil {
+						childMatch = m
+						if j == 0 && len(rest) > 1 {
+							if m2 := matchSectionDef(def.Children, rest[1:]); m2 != nil {
+								childMatch = m2
+							}
+						}
 						break
 					}
 				}
-				if !isChild {
-					rest = rest[1:]
+				if childMatch != nil {
+					return childMatch
 				}
+				return def
 			}
 			if len(rest) == 0 {
 				return def

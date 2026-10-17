@@ -123,7 +123,10 @@ func Resolve(ctx context.Context, d *gogenconf.Document, r *gogenconf.Registry, 
 		}
 		c.Workers = append(c.Workers, v)
 	}
-	if group := d.Section("worker"); group != nil {
+	for _, group := range d.Sections {
+		if group.Name != "worker" || !group.Brace {
+			continue
+		}
 		for _, section := range group.Sections {
 			var v runtimeconfig.WorkerConfig
 			v.Name = section.Name
@@ -136,6 +139,16 @@ func Resolve(ctx context.Context, d *gogenconf.Document, r *gogenconf.Registry, 
 					decoded, err := decodeWorkersLabel(ctx, r, e)
 					if err != nil {
 						return runtimeconfig.Config{}, err
+					}
+					if s, ok := any(&decoded).(interface{ SanitizeConfig() error }); ok {
+						if err := s.SanitizeConfig(); err != nil {
+							return runtimeconfig.Config{}, fmt.Errorf("sanitize %s: %w", "worker.label", err)
+						}
+					}
+					if v, ok := any(&decoded).(interface{ ValidateConfig() error }); ok {
+						if err := v.ValidateConfig(); err != nil {
+							return runtimeconfig.Config{}, fmt.Errorf("validate %s: %w", "worker.label", err)
+						}
 					}
 					v.Label = decoded
 				}

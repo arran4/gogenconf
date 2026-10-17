@@ -519,6 +519,12 @@ func FormatSchema(identity string, s *Schema) string {
 			if f.Default != nil {
 				fmt.Fprintf(&b, "        default %s\n", FormatExpr(f.Default))
 			}
+			for _, ex := range f.Examples {
+				fmt.Fprintf(&b, "        example %s\n", FormatExpr(ex))
+			}
+			for _, doc := range f.Documentation {
+				fmt.Fprintf(&b, "        ## %s\n", doc)
+			}
 			if f.Required {
 				b.WriteString("        required true\n")
 			}
@@ -533,6 +539,15 @@ func FormatSchema(identity string, s *Schema) string {
 			}
 			if f.Deprecated {
 				b.WriteString("        deprecated true\n")
+			}
+			if f.Policy != "" {
+				fmt.Fprintf(&b, "        policy %s\n", f.Policy)
+			}
+			if f.Environment != "" {
+				fmt.Fprintf(&b, "        env %s\n", f.Environment)
+			}
+			if f.EnvironmentNonEmpty {
+				b.WriteString("        env_non_empty true\n")
 			}
 			b.WriteString("    end\n")
 		}

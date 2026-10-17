@@ -200,9 +200,11 @@ func Enrich(d *%s.Document) error {
 			enrichSection_%s(s)
 		}
 	}
-	if group := d.Section(%q); group != nil && group.Brace {
-		for _, s := range group.Sections {
-			enrichSection_%s(s)
+	for _, group := range d.Sections {
+		if group.Name == %q && group.Brace {
+			for _, s := range group.Sections {
+				enrichSection_%s(s)
+			}
 		}
 	}
 `, sec.Name+" ", sec.GoName, sec.Name, sec.GoName)
@@ -227,6 +229,9 @@ func Enrich(d *%s.Document) error {
 
 	for _, sec := range s.Sections {
 		if err := emitSectionEnricher(b, sec, sec.GoName, rtAlias); err != nil {
+			return err
+		}
+		if err := emitSectionInspector(b, sec, sec.GoName, rtAlias); err != nil {
 			return err
 		}
 	}
@@ -387,30 +392,18 @@ func Inspect(d *%s.Document) *%s.Document {
 			cloned.Items[i] = entry
 		}
 	}
-	var inspectSection func(s *%s.Section, path string)
-	inspectSection = func(s *%s.Section, path string) {
-		for i, item := range s.Items {
-			if entry, ok := item.(%s.Entry); ok && IsSensitive(path, entry.Key) {
-				entry.Value = %s.Literal{Value: "[REDACTED]"}
-				s.Items[i] = entry
-			}
-		}
-		for _, child := range s.Sections {
-			childPath := path
-			if child.Name != "" {
-				if childPath != "" {
-					childPath += "." + child.Name
-				} else {
-					childPath = child.Name
-				}
-			}
-			inspectSection(child, childPath)
+`, rtAlias, rtAlias, rtAlias, rtAlias)
+
+	for _, sec := range s.Sections {
+		if sec.Repeated {
+			p("\tfor _, s := range cloned.Sections {\n\t\tif strings.HasPrefix(s.Name, %q) {\n\t\t\tinspectSection_%s(s)\n\t\t}\n\t}\n", sec.Name+" ", sec.GoName)
+			p("\tfor _, group := range cloned.Sections {\n\t\tif group.Name == %q && group.Brace {\n\t\t\tfor _, s := range group.Sections {\n\t\t\t\tinspectSection_%s(s)\n\t\t\t}\n\t\t}\n\t}\n", sec.Name, sec.GoName)
+		} else {
+			p("\tfor _, s := range cloned.Sections {\n\t\tif s.Name == %q {\n\t\t\tinspectSection_%s(s)\n\t\t}\n\t}\n", sec.Name, sec.GoName)
 		}
 	}
-	for _, s := range cloned.Sections {
-		inspectSection(s, s.Name)
-	}
-	return cloned
+
+	p(`	return cloned
 }
 
 // InspectString formats the redacted document as a string suitable for logging.
@@ -420,7 +413,7 @@ func InspectString(d *%s.Document) string {
 	}
 	return %s.Format(Inspect(d))
 }
-`, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias)
+`, rtAlias, rtAlias)
 
 	// Metadata helpers
 	for _, s := range allSecs {
@@ -843,9 +836,19 @@ func emitNormalizeSectionPath(b *bytes.Buffer, allSecs []schemaSectionMeta) {
 			p("\t\t\tcase %q:\n\t\t\t\tout = append(out, %q)\n\t\t\t\tscope = %q\n\t\t\t\tidx++\n", s.name, s.name, s.name)
 			if s.repeated {
 				if len(s.childNames) > 0 {
-					p("\t\t\t\tif idx < len(parts) && !isChildOf_%s(parts[idx]) {\n\t\t\t\t\tidx++\n\t\t\t\t}\n", strings.ReplaceAll(s.canonicalPath, ".", "_"))
+					p("\t\t\t\tmatchChildIdx := -1\n")
+					p("\t\t\t\tfor j := idx; j < len(parts); j++ {\n")
+					p("\t\t\t\t\tif isChildOf_%s(parts[j]) {\n", strings.ReplaceAll(s.canonicalPath, ".", "_"))
+					p("\t\t\t\t\t\tmatchChildIdx = j\n")
+					p("\t\t\t\t\t\tif j == idx && j+1 < len(parts) && isChildOf_%s(parts[j+1]) {\n", strings.ReplaceAll(s.canonicalPath, ".", "_"))
+					p("\t\t\t\t\t\t\tmatchChildIdx = j + 1\n")
+					p("\t\t\t\t\t\t}\n")
+					p("\t\t\t\t\t\tbreak\n")
+					p("\t\t\t\t\t}\n")
+					p("\t\t\t\t}\n")
+					p("\t\t\t\tif matchChildIdx >= 0 {\n\t\t\t\t\tidx = matchChildIdx\n\t\t\t\t} else {\n\t\t\t\t\tidx = len(parts)\n\t\t\t\t}\n")
 				} else {
-					p("\t\t\t\tif idx < len(parts) {\n\t\t\t\t\tidx++\n\t\t\t\t}\n")
+					p("\t\t\t\tidx = len(parts)\n")
 				}
 			}
 		}
@@ -870,9 +873,19 @@ func emitNormalizeSectionPath(b *bytes.Buffer, allSecs []schemaSectionMeta) {
 				p("\t\t\tcase %q:\n\t\t\t\tout = append(out, %q)\n\t\t\t\tscope = %q\n\t\t\t\tidx++\n", childName, childName, childPath)
 				if childMeta != nil && childMeta.repeated {
 					if len(childMeta.childNames) > 0 {
-						p("\t\t\t\tif idx < len(parts) && !isChildOf_%s(parts[idx]) {\n\t\t\t\t\tidx++\n\t\t\t\t}\n", strings.ReplaceAll(childMeta.canonicalPath, ".", "_"))
+						p("\t\t\t\tmatchChildIdx := -1\n")
+						p("\t\t\t\tfor j := idx; j < len(parts); j++ {\n")
+						p("\t\t\t\t\tif isChildOf_%s(parts[j]) {\n", strings.ReplaceAll(childMeta.canonicalPath, ".", "_"))
+						p("\t\t\t\t\t\tmatchChildIdx = j\n")
+						p("\t\t\t\t\t\tif j == idx && j+1 < len(parts) && isChildOf_%s(parts[j+1]) {\n", strings.ReplaceAll(childMeta.canonicalPath, ".", "_"))
+						p("\t\t\t\t\t\t\tmatchChildIdx = j + 1\n")
+						p("\t\t\t\t\t\t}\n")
+						p("\t\t\t\t\t\tbreak\n")
+						p("\t\t\t\t\t}\n")
+						p("\t\t\t\t}\n")
+						p("\t\t\t\tif matchChildIdx >= 0 {\n\t\t\t\t\tidx = matchChildIdx\n\t\t\t\t} else {\n\t\t\t\t\tidx = len(parts)\n\t\t\t\t}\n")
 					} else {
-						p("\t\t\t\tif idx < len(parts) {\n\t\t\t\t\tidx++\n\t\t\t\t}\n")
+						p("\t\t\t\tidx = len(parts)\n")
 					}
 				}
 			}
@@ -910,7 +923,7 @@ func emitSectionEnricher(b *bytes.Buffer, sec m.SectionDefinition, prefix, rtAli
 		childPrefix := prefix + child.GoName
 		if child.Repeated {
 			p("\tfor _, ch := range s.Sections {\n\t\tif strings.HasPrefix(ch.Name, %q) {\n\t\t\tenrichSection_%s(ch)\n\t\t}\n\t}\n", child.Name+" ", childPrefix)
-			p("\tif group := s.Section(%q); group != nil && group.Brace {\n\t\tfor _, ch := range group.Sections {\n\t\t\tenrichSection_%s(ch)\n\t\t}\n\t}\n", child.Name, childPrefix)
+			p("\tfor _, group := range s.Sections {\n\t\tif group.Name == %q && group.Brace {\n\t\t\tfor _, ch := range group.Sections {\n\t\t\t\tenrichSection_%s(ch)\n\t\t\t}\n\t\t}\n\t}\n", child.Name, childPrefix)
 		} else {
 			p("\tif ch := s.Section(%q); ch != nil {\n\t\tenrichSection_%s(ch)\n\t}\n", child.Name, childPrefix)
 		}
@@ -918,6 +931,37 @@ func emitSectionEnricher(b *bytes.Buffer, sec m.SectionDefinition, prefix, rtAli
 	p("}\n\n")
 	for _, child := range sec.Children {
 		if err := emitSectionEnricher(b, child, prefix+child.GoName, rtAlias); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func emitSectionInspector(b *bytes.Buffer, sec m.SectionDefinition, prefix, rtAlias string) error {
+	p := func(f string, a ...any) { fmt.Fprintf(b, f, a...) }
+	p("func inspectSection_%s(s *%s.Section) {\n", prefix, rtAlias)
+	p("\tif s == nil {\n\t\treturn\n\t}\n")
+	for _, f := range sec.Fields {
+		if f.Sensitive {
+			p("\tfor i, item := range s.Items {\n")
+			p("\t\tif entry, ok := item.(%s.Entry); ok && entry.Key == %q {\n", rtAlias, f.Key)
+			p("\t\t\tentry.Value = %s.Literal{Value: \"[REDACTED]\"}\n", rtAlias)
+			p("\t\t\ts.Items[i] = entry\n")
+			p("\t\t}\n\t}\n")
+		}
+	}
+	for _, child := range sec.Children {
+		childPrefix := prefix + child.GoName
+		if child.Repeated {
+			p("\tfor _, ch := range s.Sections {\n\t\tif strings.HasPrefix(ch.Name, %q) {\n\t\t\tinspectSection_%s(ch)\n\t\t}\n\t}\n", child.Name+" ", childPrefix)
+			p("\tfor _, group := range s.Sections {\n\t\tif group.Name == %q && group.Brace {\n\t\t\tfor _, ch := range group.Sections {\n\t\t\t\tinspectSection_%s(ch)\n\t\t\t}\n\t\t}\n\t}\n", child.Name, childPrefix)
+		} else {
+			p("\tfor _, ch := range s.Sections {\n\t\tif ch.Name == %q {\n\t\t\tinspectSection_%s(ch)\n\t\t}\n\t}\n", child.Name, childPrefix)
+		}
+	}
+	p("}\n\n")
+	for _, child := range sec.Children {
+		if err := emitSectionInspector(b, child, prefix+child.GoName, rtAlias); err != nil {
 			return err
 		}
 	}

@@ -1,5 +1,7 @@
 package gogenconf
 
+import "strings"
+
 // DisplayPolicy declares which call arguments identify sources rather than
 // contain content. Unknown declarers fail closed. This is independent of typed
 // resolver registration: registering a resolver does not authorize disclosure.
@@ -60,42 +62,66 @@ func (s Schema) Inspect(d *Document, section, key string, p DisplayPolicy) (stri
 	return FormatExpr(e), true
 }
 
+func redactSection(def SectionDefinition, section *Section, p DisplayPolicy) {
+	for i, item := range section.Items {
+		if entry, ok := item.(Entry); ok {
+			for _, f := range def.Fields {
+				if f.Key == entry.Key && f.Sensitive && !p.SafeSource(entry.Value) {
+					entry.Value = Literal{Value: "<redacted>"}
+					section.Items[i] = entry
+					break
+				}
+			}
+		}
+	}
+	if len(def.Children) > 0 {
+		redactSectionDefinitions(def.Children, section.Sections, p)
+	}
+}
+
+func redactSectionDefinitions(defs []SectionDefinition, sections []*Section, p DisplayPolicy) {
+	for _, def := range defs {
+		if def.Repeated {
+			for _, section := range sections {
+				if strings.HasPrefix(section.Name, def.Name+" ") {
+					redactSection(def, section, p)
+				}
+			}
+			for _, section := range sections {
+				if section.Name == def.Name && section.Brace {
+					for _, inst := range section.Sections {
+						redactSection(def, inst, p)
+					}
+				}
+			}
+		} else {
+			for _, section := range sections {
+				if section.Name == def.Name {
+					redactSection(def, section, p)
+				}
+			}
+		}
+	}
+}
+
 // InspectionDocument is a redacted display copy, not a persistence round trip.
 // Format/Save the original document to preserve authored declarations.
 func (s Schema) InspectionDocument(d *Document, p DisplayPolicy) *Document {
+	if d == nil {
+		return nil
+	}
 	copy := d.Clone()
 	for i, item := range copy.Items {
 		if entry, ok := item.(Entry); ok {
-			if f, known := s.Field("", entry.Key); known && f.Sensitive && !p.SafeSource(entry.Value) {
-				entry.Value = Literal{Value: "<redacted>"}
-				copy.Items[i] = entry
-			}
-		}
-	}
-	var redactSection func(section *Section, path string)
-	redactSection = func(section *Section, path string) {
-		for i, item := range section.Items {
-			if entry, ok := item.(Entry); ok {
-				if f, known := s.Field(path, entry.Key); known && f.Sensitive && !p.SafeSource(entry.Value) {
+			for _, f := range s.RootFields {
+				if f.Key == entry.Key && f.Sensitive && !p.SafeSource(entry.Value) {
 					entry.Value = Literal{Value: "<redacted>"}
-					section.Items[i] = entry
+					copy.Items[i] = entry
+					break
 				}
 			}
 		}
-		for _, child := range section.Sections {
-			childPath := path
-			if child.Name != "" {
-				if childPath != "" {
-					childPath += "." + child.Name
-				} else {
-					childPath = child.Name
-				}
-			}
-			redactSection(child, childPath)
-		}
 	}
-	for _, section := range copy.Sections {
-		redactSection(section, section.Name)
-	}
+	redactSectionDefinitions(s.Sections, copy.Sections, p)
 	return copy
 }

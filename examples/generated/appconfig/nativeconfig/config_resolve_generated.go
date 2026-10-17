@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -69,15 +70,21 @@ func bindingEntryValue(entry Entry, present bool, fallback Expr, env string, non
 }
 
 // ResolveField prevents a registered service error from disclosing a sensitive
-// value through generated binders or providers.
+// value through generated binders or providers while producing a structured ConfigError.
 func ResolveField[T any](ctx context.Context, r *Registry, e Expr, path string, sensitive bool) (T, error) {
 	v, err := Resolve[T](ctx, r, e)
 	if err != nil {
 		var zero T
+		cause := err
 		if sensitive {
-			return zero, fmt.Errorf("resolve %s: source resolution failed", path)
+			cause = errors.New("source resolution failed")
 		}
-		return zero, fmt.Errorf("resolve %s: %w", path, err)
+		return zero, &ConfigError{
+			Stage:  StageResolve,
+			Path:   path,
+			Source: SpanOf(e),
+			Err:    cause,
+		}
 	}
 	return v, nil
 }
