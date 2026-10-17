@@ -80,10 +80,8 @@ func Validate(s m.Schema) error {
 			return fmt.Errorf("root.%s: environment fallback is unsupported for map fields", f.Key)
 		}
 		if ti.IsMap && f.Default != nil {
-			if _, isMap := f.Default.(m.Map); !isMap {
-				if pMap, ok := f.Default.(*m.Map); !ok || pMap == nil {
-					return fmt.Errorf("root.%s: literal or non-map default is unsupported for map fields", f.Key)
-				}
+			if err := validateMapDefault(ti, f.Default, "root."+f.Key); err != nil {
+				return err
 			}
 		}
 		if f.Default != nil {
@@ -162,10 +160,8 @@ func Validate(s m.Schema) error {
 				return fmt.Errorf("%s.%s: environment fallback is unsupported for map fields", sec.Name, f.Key)
 			}
 			if ti.IsMap && f.Default != nil {
-				if _, isMap := f.Default.(m.Map); !isMap {
-					if pMap, ok := f.Default.(*m.Map); !ok || pMap == nil {
-						return fmt.Errorf("%s.%s: literal or non-map default is unsupported for map fields", sec.Name, f.Key)
-					}
+				if err := validateMapDefault(ti, f.Default, sec.Name+"."+f.Key); err != nil {
+					return err
 				}
 			}
 			if f.Default != nil {
@@ -255,10 +251,8 @@ func validateChildDefinitions(parent m.SectionDefinition, path string, typesSeen
 				return fmt.Errorf("%s.%s: environment fallback is unsupported for map fields", childPath, f.Key)
 			}
 			if ti.IsMap && f.Default != nil {
-				if _, isMap := f.Default.(m.Map); !isMap {
-					if pMap, ok := f.Default.(*m.Map); !ok || pMap == nil {
-						return fmt.Errorf("%s.%s: literal or non-map default is unsupported for map fields", childPath, f.Key)
-					}
+				if err := validateMapDefault(ti, f.Default, childPath+"."+f.Key); err != nil {
+					return err
 				}
 			}
 			if f.Default != nil {
@@ -354,6 +348,112 @@ func emitTypedDefaultValueBody(p func(string, ...any), dest string, ti TypeInfo,
 	}
 }
 
+func literalString(e m.Expr) (string, bool) {
+	switch v := e.(type) {
+	case m.Literal:
+		return v.Value, true
+	case *m.Literal:
+		if v != nil {
+			return v.Value, true
+		}
+	}
+	return "", false
+}
+
+func validateMapDefault(ti TypeInfo, defaultExpr m.Expr, fieldPath string) error {
+	var mp m.Map
+	if mVal, ok := defaultExpr.(m.Map); ok {
+		mp = mVal
+	} else if pMap, ok := defaultExpr.(*m.Map); ok && pMap != nil {
+		mp = *pMap
+	} else {
+		return fmt.Errorf("%s: literal or non-map default is unsupported for map fields", fieldPath)
+	}
+
+	elemInfo := ti
+	if ti.Element != nil {
+		elemInfo = *ti.Element
+	} else {
+		elemInfo.GoType, elemInfo.IsSlice, elemInfo.IsMap = ti.ElemType, false, false
+	}
+
+	for _, entry := range mp.Entries {
+		entryPath := fieldPath + "." + entry.Key
+		if entry.Key == "" {
+			return fmt.Errorf("%s: empty key in map default", fieldPath)
+		}
+		if entry.Value == nil {
+			return fmt.Errorf("%s: nil entry value in map default", entryPath)
+		}
+
+		if elemInfo.IsMap {
+			if err := validateMapDefault(elemInfo, entry.Value, entryPath); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if elemInfo.IsSlice {
+			sliceElemInfo := elemInfo
+			if elemInfo.Element != nil {
+				sliceElemInfo = *elemInfo.Element
+			} else {
+				sliceElemInfo.GoType, sliceElemInfo.IsSlice, sliceElemInfo.IsMap = elemInfo.ElemType, false, false
+			}
+
+			if lst, ok := entry.Value.(m.List); ok {
+				for i, it := range lst.Items {
+					itemPath := fmt.Sprintf("%s[%d]", entryPath, i)
+					if it == nil {
+						return fmt.Errorf("%s: nil item in list default", itemPath)
+					}
+					val, isLit := literalString(it)
+					if !isLit {
+						return fmt.Errorf("%s: unsupported expression in list default %T", itemPath, it)
+					}
+					if err := ValidateTypeDefault(sliceElemInfo, val); err != nil {
+						return fmt.Errorf("%s: %w", itemPath, err)
+					}
+				}
+				continue
+			}
+			if pLst, ok := entry.Value.(*m.List); ok && pLst != nil {
+				for i, it := range pLst.Items {
+					itemPath := fmt.Sprintf("%s[%d]", entryPath, i)
+					if it == nil {
+						return fmt.Errorf("%s: nil item in list default", itemPath)
+					}
+					val, isLit := literalString(it)
+					if !isLit {
+						return fmt.Errorf("%s: unsupported expression in list default %T", itemPath, it)
+					}
+					if err := ValidateTypeDefault(sliceElemInfo, val); err != nil {
+						return fmt.Errorf("%s: %w", itemPath, err)
+					}
+				}
+				continue
+			}
+			val, isLit := literalString(entry.Value)
+			if !isLit {
+				return fmt.Errorf("%s: expected list or comma-separated literal default, got %T", entryPath, entry.Value)
+			}
+			if err := ValidateTypeDefault(elemInfo, val); err != nil {
+				return fmt.Errorf("%s: %w", entryPath, err)
+			}
+			continue
+		}
+
+		val, isLit := literalString(entry.Value)
+		if !isLit {
+			return fmt.Errorf("%s: unsupported expression in map default %T", entryPath, entry.Value)
+		}
+		if err := ValidateTypeDefault(elemInfo, val); err != nil {
+			return fmt.Errorf("%s: %w", entryPath, err)
+		}
+	}
+	return nil
+}
+
 func mapEntryRawValue(e m.Expr) (string, bool) {
 	switch v := e.(type) {
 	case m.Literal:
@@ -382,7 +482,7 @@ func mapEntryRawValue(e m.Expr) (string, bool) {
 	return "", false
 }
 
-func emitMapDefaultValue(p func(string, ...any), dest string, ti TypeInfo, mp m.Map, path string, sensitive bool) {
+func emitMapDefaultValue(p func(string, ...any), dest string, ti TypeInfo, mp m.Map, path string, sensitive bool, depth int) {
 	elemInfo := ti
 	if ti.Element != nil {
 		elemInfo = *ti.Element
@@ -392,11 +492,26 @@ func emitMapDefaultValue(p func(string, ...any), dest string, ti TypeInfo, mp m.
 	p("%s=make(%s,%d)\n", dest, ti.GoType, len(mp.Entries))
 	for _, entry := range mp.Entries {
 		entryPath := path + "." + entry.Key
+		valVar := fmt.Sprintf("mapElemVal%d", depth)
+		if elemInfo.IsMap {
+			var nestedMap m.Map
+			if nm, ok := entry.Value.(m.Map); ok {
+				nestedMap = nm
+			} else if pnm, ok := entry.Value.(*m.Map); ok && pnm != nil {
+				nestedMap = *pnm
+			}
+			p("{\n")
+			p("var %s %s;\n", valVar, ti.ElemType)
+			emitMapDefaultValue(p, valVar, elemInfo, nestedMap, entryPath, sensitive, depth+1)
+			p("%s[%q]=%s;\n", dest, entry.Key, valVar)
+			p("}\n")
+			continue
+		}
 		if raw, ok := mapEntryRawValue(entry.Value); ok {
 			p("{\n")
-			p("var elemVal %s;\n", ti.ElemType)
-			emitTypedDefaultValueBody(p, "elemVal", elemInfo, raw, entryPath, sensitive)
-			p("%s[%q]=elemVal;\n", dest, entry.Key)
+			p("var %s %s;\n", valVar, ti.ElemType)
+			emitTypedDefaultValueBody(p, valVar, elemInfo, raw, entryPath, sensitive)
+			p("%s[%q]=%s;\n", dest, entry.Key, valVar)
 			p("}\n")
 		}
 	}
@@ -562,9 +677,9 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 		ti, _ := ClassifyType(f.GoType)
 		if ti.IsMap {
 			if mp, ok := f.Default.(m.Map); ok {
-				emitMapDefaultValue(p, dest, ti, mp, f.Key, f.Sensitive)
+				emitMapDefaultValue(p, dest, ti, mp, f.Key, f.Sensitive, 0)
 			} else if mp, ok := f.Default.(*m.Map); ok && mp != nil {
-				emitMapDefaultValue(p, dest, ti, *mp, f.Key, f.Sensitive)
+				emitMapDefaultValue(p, dest, ti, *mp, f.Key, f.Sensitive, 0)
 			}
 			continue
 		}
@@ -593,9 +708,9 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 			ti, _ := ClassifyType(f.GoType)
 			if ti.IsMap {
 				if mp, ok := f.Default.(m.Map); ok {
-					emitMapDefaultValue(p, dest, ti, mp, sec.Name+"."+f.Key, f.Sensitive)
+					emitMapDefaultValue(p, dest, ti, mp, sec.Name+"."+f.Key, f.Sensitive, 0)
 				} else if mp, ok := f.Default.(*m.Map); ok && mp != nil {
-					emitMapDefaultValue(p, dest, ti, *mp, sec.Name+"."+f.Key, f.Sensitive)
+					emitMapDefaultValue(p, dest, ti, *mp, sec.Name+"."+f.Key, f.Sensitive, 0)
 				}
 				continue
 			}

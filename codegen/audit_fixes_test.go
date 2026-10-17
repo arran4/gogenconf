@@ -217,6 +217,16 @@ func TestAudit_F03_MapDefaultsAndPointerSliceCompilation(t *testing.T) {
 			}},
 			{Key: "counts", GoName: "Counts", GoType: "[]*int", Default: m.Literal{Value: "1,2,3"}},
 			{Key: "tags", GoName: "Tags", GoType: "[]*string", Default: m.Literal{Value: "alpha,beta"}},
+			{Key: "clusters", GoName: "Clusters", GoType: "map[string]map[string]string", Default: m.Map{
+				Entries: []m.MapEntry{
+					{Key: "prod", Value: m.Map{
+						Entries: []m.MapEntry{
+							{Key: "region", Value: m.Literal{Value: "us-east-1"}},
+							{Key: "zone", Value: m.Literal{Value: "us-east-1a"}},
+						},
+					}},
+				},
+			}},
 		},
 		Sections: []m.SectionDefinition{{
 			Name:   "service",
@@ -226,6 +236,15 @@ func TestAudit_F03_MapDefaultsAndPointerSliceCompilation(t *testing.T) {
 				{Key: "metadata", GoName: "Metadata", GoType: "map[string]string", Default: m.Map{
 					Entries: []m.MapEntry{
 						{Key: "tier", Value: m.Literal{Value: "backend"}},
+					},
+				}},
+				{Key: "overrides", GoName: "Overrides", GoType: "map[string]map[string]string", Default: m.Map{
+					Entries: []m.MapEntry{
+						{Key: "stage", Value: m.Map{
+							Entries: []m.MapEntry{
+								{Key: "canary", Value: m.Literal{Value: "true"}},
+							},
+						}},
 					},
 				}},
 			},
@@ -293,12 +312,22 @@ func main() {
 		panic(fmt.Sprintf("unexpected service.metadata default: %+v", defaults.Service.Metadata))
 	}
 
+	// Verify nested map defaults in root and sections
+	if defaults.Clusters == nil || defaults.Clusters["prod"] == nil || defaults.Clusters["prod"]["region"] != "us-east-1" || defaults.Clusters["prod"]["zone"] != "us-east-1a" {
+		panic(fmt.Sprintf("unexpected clusters nested map default: %+v", defaults.Clusters))
+	}
+	if defaults.Service.Overrides == nil || defaults.Service.Overrides["stage"] == nil || defaults.Service.Overrides["stage"]["canary"] != "true" {
+		panic(fmt.Sprintf("unexpected service.overrides nested map default: %+v", defaults.Service.Overrides))
+	}
+
 	// Verify parity with Load(Seed())
 	loaded, err := appconfig.Load(context.Background(), appconfig.Seed())
 	if err != nil {
 		panic(err)
 	}
-	if loaded.Labels["env"] != "production" || loaded.Routes["http"] != 80 || loaded.Service.Metadata["tier"] != "backend" {
+	if loaded.Labels["env"] != "production" || loaded.Routes["http"] != 80 || loaded.Service.Metadata["tier"] != "backend" ||
+		loaded.Clusters["prod"]["region"] != "us-east-1" || loaded.Clusters["prod"]["zone"] != "us-east-1a" ||
+		loaded.Service.Overrides["stage"]["canary"] != "true" {
 		panic("Seed/Load parity failure for map defaults")
 	}
 }
@@ -423,6 +452,99 @@ func TestAudit_F03_MapEnvironmentFallbackRejected(t *testing.T) {
 				}},
 			},
 			wantErr: "service.labels: literal or non-map default is unsupported for map fields",
+		},
+		{
+			name: "root nested map with literal default entry",
+			schema: m.Schema{
+				Version: 1,
+				RootFields: []m.Field{
+					{Key: "clusters", GoName: "Clusters", GoType: "map[string]map[string]string", Default: m.Map{
+						Entries: []m.MapEntry{
+							{Key: "prod", Value: m.Literal{Value: "not-a-map"}},
+						},
+					}},
+				},
+			},
+			wantErr: "root.clusters.prod: literal or non-map default is unsupported for map fields",
+		},
+		{
+			name: "root nested map with call default entry",
+			schema: m.Schema{
+				Version: 1,
+				RootFields: []m.Field{
+					{Key: "clusters", GoName: "Clusters", GoType: "map[string]map[string]string", Default: m.Map{
+						Entries: []m.MapEntry{
+							{Key: "prod", Value: m.Map{
+								Entries: []m.MapEntry{
+									{Key: "region", Value: m.Call{Name: "env", Args: []m.Expr{m.Literal{Value: "REGION"}}}},
+								},
+							}},
+						},
+					}},
+				},
+			},
+			wantErr: "root.clusters.prod.region: unsupported expression in map default",
+		},
+		{
+			name: "root map with invalid integer default entry",
+			schema: m.Schema{
+				Version: 1,
+				RootFields: []m.Field{
+					{Key: "limits", GoName: "Limits", GoType: "map[string]int", Default: m.Map{
+						Entries: []m.MapEntry{
+							{Key: "max", Value: m.Literal{Value: "not-an-int"}},
+						},
+					}},
+				},
+			},
+			wantErr: "root.limits.max: invalid integer default",
+		},
+		{
+			name: "root map default with empty key",
+			schema: m.Schema{
+				Version: 1,
+				RootFields: []m.Field{
+					{Key: "labels", GoName: "Labels", GoType: "map[string]string", Default: m.Map{
+						Entries: []m.MapEntry{
+							{Key: "", Value: m.Literal{Value: "val"}},
+						},
+					}},
+				},
+			},
+			wantErr: "root.labels: empty key in map default",
+		},
+		{
+			name: "root map default with nil value",
+			schema: m.Schema{
+				Version: 1,
+				RootFields: []m.Field{
+					{Key: "labels", GoName: "Labels", GoType: "map[string]string", Default: m.Map{
+						Entries: []m.MapEntry{
+							{Key: "foo", Value: nil},
+						},
+					}},
+				},
+			},
+			wantErr: "root.labels.foo: nil entry value in map default",
+		},
+		{
+			name: "section nested map with literal default entry",
+			schema: m.Schema{
+				Version: 1,
+				Sections: []m.SectionDefinition{{
+					Name:   "service",
+					GoName: "Service",
+					GoType: "ServiceConfig",
+					Fields: []m.Field{
+						{Key: "overrides", GoName: "Overrides", GoType: "map[string]map[string]string", Default: m.Map{
+							Entries: []m.MapEntry{
+								{Key: "stage", Value: m.Literal{Value: "not-a-map"}},
+							},
+						}},
+					},
+				}},
+			},
+			wantErr: "service.overrides.stage: literal or non-map default is unsupported for map fields",
 		},
 	}
 
