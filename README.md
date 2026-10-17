@@ -202,9 +202,24 @@ using explicit typed calls, with no reflection-based struct population. The
 optional `lookup` supplies legacy environment fallbacks described by the schema.
 Authored values take precedence over environment fallbacks, then schema defaults;
 transient defaults inserted by enrichment retain that distinction until persisted.
-Supported static mappings are deliberately narrow: `string`, `[]byte`, `[]string`
-(the application registers its list semantics), and runtime-only `bool` fields.
-Invalid/ambiguous mappings fail generation or compilation.
+Supported static mappings include scalar Go numerics (with width checks),
+`bool`, `string`, `[]byte`, `time.Duration`, optional pointers, ordered lists,
+and string-keyed maps. Invalid/ambiguous mappings fail generation or
+compilation.
+
+Schema fields may also select an application-owned parser with descriptive
+metadata such as `parser "custom_rule_ast"`. Generation maps that name
+deterministically to a typed option (for example,
+`WithCustomRuleAst(CustomRuleAstFunc)`). The parser receives bounded canonical
+expression text and its source span; nil, duplicate, and missing parser
+implementations are rejected. Parser names are schema identifiers, not Go
+identifiers, and collisions in their generated symbols fail generation. This is
+static dispatch, not plugin loading or a global registry. Application parsers
+are responsible for their own inverse formatting contract.
+
+The generated binder's `Resolve(ctx, doc, registry, lookup)` remains compatible
+for schemas without parser-backed fields. Parser-backed values are supplied
+through `Load` options so ordinary callers do not manipulate the unresolved AST.
 
 ```text
 config file → Document / Expr → Schema + migrations + enrichment

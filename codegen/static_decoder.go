@@ -37,6 +37,43 @@ func emitStaticDecoder(p func(string, ...any), fn, goType string, ti TypeInfo, r
 	emitStaticScalarDecoder(p, fn, goType, ti, rtAlias, path, sensitive)
 }
 
+// emitStaticParserDecoder emits a narrow field-specific bridge for an
+// application-owned expression parser. The native runtime still owns parsing
+// the outer document; this adapter receives only the already-bounded Expr and
+// its span. It never discovers parsers dynamically.
+func emitStaticParserDecoder(p func(string, ...any), fn, goType string, ti TypeInfo, parserType, rtAlias, path string, sensitive bool) {
+	if ti.IsSlice {
+		elemInfo := ti
+		if ti.Element != nil {
+			elemInfo = *ti.Element
+		} else {
+			elemInfo.GoType, elemInfo.IsSlice, elemInfo.IsMap = ti.ElemType, false, false
+		}
+		emitStaticParserDecoder(p, fn+"Element", ti.ElemType, elemInfo, parserType, rtAlias, path, sensitive)
+		p("func %s(e %s.Expr,parse %s)(%s,error){var out %s;if parse==nil{return out,decodeValueError(%q,%t,%s.SpanOf(e),fmt.Errorf(%q))};switch v:=e.(type){case %s.List:if len(v.Items)>65536{return out,decodeValueError(%q,%t,%s.SpanOf(e),fmt.Errorf(\"collection exceeds 65536 items\"))};out=make(%s,0,len(v.Items));for _,item:=range v.Items{value,err:=%sElement(item,parse);if err!=nil{return out,err};out=append(out,value)};return out,nil;case *%s.List:if v==nil{return out,decodeValueError(%q,%t,%s.SpanOf(e),fmt.Errorf(\"nil list\"))};return %s(*v,parse);default:value,err:=%sElement(e,parse);if err!=nil{return out,err};return %s{value},nil}}\n", fn, rtAlias, parserType, goType, goType, path, sensitive, rtAlias, "missing required parser "+parserType, rtAlias, path, sensitive, rtAlias, goType, fn, rtAlias, path, sensitive, rtAlias, fn, fn, goType)
+		return
+	}
+	if ti.IsMap {
+		elemInfo := ti
+		if ti.Element != nil {
+			elemInfo = *ti.Element
+		} else {
+			elemInfo.GoType, elemInfo.IsSlice, elemInfo.IsMap = ti.ElemType, false, false
+		}
+		emitStaticParserDecoder(p, fn+"Element", ti.ElemType, elemInfo, parserType, rtAlias, path, sensitive)
+		p("func %s(e %s.Expr,parse %s)(%s,error){var out %s;if parse==nil{return out,decodeValueError(%q,%t,%s.SpanOf(e),fmt.Errorf(%q))};switch v:=e.(type){case %s.Map:if len(v.Entries)>65536{return out,decodeValueError(%q,%t,%s.SpanOf(e),fmt.Errorf(\"collection exceeds 65536 entries\"))};out=make(%s,len(v.Entries));for _,entry:=range v.Entries{value,err:=%sElement(entry.Value,parse);if err!=nil{return out,err};out[entry.Key]=value};return out,nil;case *%s.Map:if v==nil{return out,decodeValueError(%q,%t,%s.SpanOf(e),fmt.Errorf(\"nil map\"))};return %s(*v,parse);default:return out,decodeValueError(%q,%t,%s.SpanOf(e),fmt.Errorf(\"expected keyed collection, got %%T\",e))}}\n", fn, rtAlias, parserType, goType, goType, path, sensitive, rtAlias, "missing required parser "+parserType, rtAlias, path, sensitive, rtAlias, goType, fn, rtAlias, path, sensitive, rtAlias, fn, path, sensitive, rtAlias)
+		return
+	}
+	if ti.IsPtr {
+		elemInfo := ti
+		elemInfo.GoType, elemInfo.IsPtr = ti.ElemType, false
+		emitStaticParserDecoder(p, fn+"Value", ti.ElemType, elemInfo, parserType, rtAlias, path, sensitive)
+		p("func %s(e %s.Expr,parse %s)(%s,error){value,err:=%sValue(e,parse);if err!=nil{return nil,err};return &value,nil}\n", fn, rtAlias, parserType, goType, fn)
+		return
+	}
+	p("func %s(e %s.Expr,parse %s)(%s,error){var out %s;if parse==nil{return out,decodeValueError(%q,%t,%s.SpanOf(e),fmt.Errorf(%q))};raw:=%s.FormatExpr(e);switch call:=e.(type){case %s.Literal:raw=call.Value;case *%s.Literal:if call!=nil{raw=call.Value};case %s.Call:if len(call.Args)==1{if literal,ok:=call.Args[0].(%s.Literal);ok{raw=literal.Value}};case *%s.Call:if call!=nil&&len(call.Args)==1{if literal,ok:=call.Args[0].(%s.Literal);ok{raw=literal.Value}}};if len(raw)>65536{return out,decodeValueError(%q,%t,%s.SpanOf(e),fmt.Errorf(\"custom expression exceeds 65536 bytes\"))};value,err:=parse(raw,%s.SpanOf(e));if err!=nil{return out,decodeValueError(%q,%t,%s.SpanOf(e),err)};return value,nil}\n", fn, rtAlias, parserType, goType, goType, path, sensitive, rtAlias, "missing required parser "+parserType, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, path, sensitive, rtAlias, rtAlias, path, sensitive, rtAlias)
+}
+
 func staticDecoderCall(fn string, ti TypeInfo) string {
 	return fn
 }

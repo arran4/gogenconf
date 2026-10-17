@@ -37,6 +37,7 @@ func Validate(s m.Schema) error {
 		return fmt.Errorf("schema requires a positive version")
 	}
 	paths, names, typesSeen := map[string]bool{}, map[string]bool{}, map[string]bool{"Config": true}
+	parserNames := map[string]string{}
 	rootKeys := map[string]bool{}
 	for _, f := range s.RootFields {
 		for _, e := range f.Examples {
@@ -59,6 +60,16 @@ func Validate(s m.Schema) error {
 		}
 		if !exported(f.GoName) || names[f.GoName] {
 			return fmt.Errorf("invalid or duplicate root field mapping %s", f.GoName)
+		}
+		if f.Parser != "" {
+			symbol, err := parserSymbol(f.Parser)
+			if err != nil {
+				return fmt.Errorf("invalid parser mapping root.%s: %w", f.Key, err)
+			}
+			if previous, exists := parserNames[symbol]; exists && previous != f.Parser {
+				return fmt.Errorf("parser names %q and %q both map to generated symbol %s", previous, f.Parser, symbol)
+			}
+			parserNames[symbol] = f.Parser
 		}
 		names[f.GoName] = true
 		if !f.RuntimeOnly {
@@ -140,6 +151,16 @@ func Validate(s m.Schema) error {
 			if !exported(f.GoName) || fields[f.GoName] {
 				return fmt.Errorf("invalid or duplicate field mapping %s.%s", sec.GoName, f.GoName)
 			}
+			if f.Parser != "" {
+				symbol, err := parserSymbol(f.Parser)
+				if err != nil {
+					return fmt.Errorf("invalid parser mapping %s.%s: %w", sec.Name, f.Key, err)
+				}
+				if previous, exists := parserNames[symbol]; exists && previous != f.Parser {
+					return fmt.Errorf("parser names %q and %q both map to generated symbol %s", previous, f.Parser, symbol)
+				}
+				parserNames[symbol] = f.Parser
+			}
 			fields[f.GoName] = true
 			if !f.RuntimeOnly {
 				if f.Key == "" || keys[f.Key] {
@@ -184,6 +205,9 @@ func Validate(s m.Schema) error {
 		if err := validateChildDefinitions(sec, sec.Name, typesSeen); err != nil {
 			return err
 		}
+	}
+	if _, err := parserDefinitions(s); err != nil {
+		return err
 	}
 	return nil
 }
@@ -601,6 +625,10 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 	if err := Validate(s); err != nil {
 		return nil, err
 	}
+	parsers, err := parserDefinitions(s)
+	if err != nil {
+		return nil, err
+	}
 	if !token.IsIdentifier(o.Package) || o.Package == "_" {
 		return nil, fmt.Errorf("invalid package")
 	}
@@ -667,10 +695,27 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 	if !binder {
 		return format.Source(b.Bytes())
 	}
+	if len(parsers) > 0 {
+		for _, parser := range parsers {
+			p("// %sFunc parses the bounded canonical expression for schema parser %q.\n", parser.Symbol, parser.Name)
+			p("type %sFunc func(raw string,span %s.Span)(%s,error)\n", parser.Symbol, rtAlias, parser.GoType)
+			p("// %sFormatter is the explicit inverse contract for values accepted by %sFunc.\n", parser.Symbol, parser.Symbol)
+			p("type %sFormatter interface{FormatConfig()(string,error)}\nfunc Format%s(value %s)(string,error){formatter,ok:=any(value).(%sFormatter);if !ok{return \"\",fmt.Errorf(%q)};raw,err:=formatter.FormatConfig();if err!=nil{return \"\",fmt.Errorf(%q,err)};if len(raw)>65536{return \"\",fmt.Errorf(\"formatted custom expression exceeds 65536 bytes\")};return raw,nil}\n", parser.Symbol, parser.Symbol, parser.GoType, parser.Symbol, "value does not implement "+parser.Symbol+"Formatter", "format parser "+parser.Name+": %w")
+			p("func Format%sSlice(values []%s)([]string,error){if len(values)>65536{return nil,fmt.Errorf(\"collection exceeds 65536 items\")};out:=make([]string,len(values));for i,v:=range values{s,err:=Format%s(v);if err!=nil{return nil,err};out[i]=s};return out,nil}\n", parser.Symbol, parser.GoType, parser.Symbol)
+			p("func Format%sMap(values map[string]%s)(map[string]string,error){if len(values)>65536{return nil,fmt.Errorf(\"collection exceeds 65536 entries\")};out:=make(map[string]string,len(values));for k,v:=range values{s,err:=Format%s(v);if err!=nil{return nil,err};out[k]=s};return out,nil}\n", parser.Symbol, parser.GoType, parser.Symbol)
+		}
+		p("type decoderOptions struct{\n")
+		for _, parser := range parsers {
+			p("%s %sFunc\n%sSet bool\n", parser.Symbol, parser.Symbol, strings.ToLower(parser.Symbol[:1])+parser.Symbol[1:])
+		}
+		p("}\n")
+	} else {
+		p("type decoderOptions struct{}\n")
+	}
 	p("var ErrInvalidDefault=errors.New(\"invalid generated default\")\nfunc defaultValueError(path string,sensitive bool,err error)error{if sensitive{return fmt.Errorf(\"default %%s: %%w\",path,ErrInvalidDefault)};return fmt.Errorf(\"default %%s: %%w\",path,err)}\n")
 	p("// Defaults returns concrete static defaults and optional legacy environment overrides.\n// Invalid static or environment values are errors; they are never treated as omission.\nfunc Defaults(lookup %s.LookupEnv) (%sConfig,error) { var c %sConfig\n", rtAlias, qual, qual)
 	for _, f := range s.RootFields {
-		if f.InputOnly || f.RuntimeOnly || f.Policy == m.ProviderBacked {
+		if f.InputOnly || f.RuntimeOnly || f.Policy == m.ProviderBacked || f.Parser != "" {
 			continue
 		}
 		dest := "c." + f.GoName
@@ -701,7 +746,7 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 			continue
 		}
 		for _, f := range sec.Fields {
-			if f.InputOnly || f.RuntimeOnly || f.Policy == m.ProviderBacked {
+			if f.InputOnly || f.RuntimeOnly || f.Policy == m.ProviderBacked || f.Parser != "" {
 				continue
 			}
 			dest := "c." + sec.GoName + "." + f.GoName
@@ -738,14 +783,19 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		emitStaticDecoder(p, staticDecoderName("Root", f.GoName), f.ResolvedGoType(), ti, rtAlias, f.Key, f.Sensitive)
+		if f.Parser != "" {
+			symbol, _ := parserSymbol(f.Parser)
+			emitStaticParserDecoder(p, staticDecoderName("Root", f.GoName), f.ResolvedGoType(), ti, symbol+"Func", rtAlias, f.Key, f.Sensitive)
+		} else {
+			emitStaticDecoder(p, staticDecoderName("Root", f.GoName), f.ResolvedGoType(), ti, rtAlias, f.Key, f.Sensitive)
+		}
 	}
 	for _, sec := range s.Sections {
 		if err := emitSectionStaticDecoders(p, sec, sec.GoName, sec.Name, rtAlias); err != nil {
 			return nil, err
 		}
 	}
-	p("// Resolve constructs ordinary Go fields; provider policy alone defers resolution.\nfunc Resolve(ctx context.Context,d *%s.Document,r *%s.Registry,lookup %s.LookupEnv)(%sConfig,error){\nvar c %sConfig\nif d==nil{return c,fmt.Errorf(\"nil document\")}\nif d.Version>%d{return c,fmt.Errorf(\"unsupported future configuration version\")}\n", rtAlias, rtAlias, rtAlias, qual, qual, s.Version)
+	p("// Resolve constructs ordinary Go fields; provider policy alone defers resolution.\nfunc Resolve(ctx context.Context,d *%s.Document,r *%s.Registry,lookup %s.LookupEnv)(%sConfig,error){return resolveWithOptions(ctx,d,r,lookup,decoderOptions{})}\nfunc resolveWithOptions(ctx context.Context,d *%s.Document,r *%s.Registry,lookup %s.LookupEnv,options decoderOptions)(%sConfig,error){\nvar c %sConfig\nif d==nil{return c,fmt.Errorf(\"nil document\")}\nif d.Version>%d{return c,fmt.Errorf(\"unsupported future configuration version\")}\n", rtAlias, rtAlias, rtAlias, qual, rtAlias, rtAlias, rtAlias, qual, qual, s.Version)
 	for _, f := range s.RootFields {
 		if f.InputOnly || f.RuntimeOnly {
 			continue
@@ -758,6 +808,17 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 		p("if e!=nil{")
 		if f.Policy == m.ProviderBacked {
 			p("c.%s=%s.FieldProvider[%s](r,e,%q,%t)\n", f.GoName, rtAlias, f.ResolvedGoType(), f.Key, f.Sensitive)
+		} else if f.Parser != "" {
+			symbol, _ := parserSymbol(f.Parser)
+			p("value,err:=decodeRoot%s(e,options.%s);if err!=nil{return %sConfig{},err}\n", f.GoName, symbol, qual)
+			if f.Sensitive {
+				p("if s,ok:=any(&value).(interface{SanitizeConfig()error});ok{if err:=s.SanitizeConfig();err!=nil{return %sConfig{},fmt.Errorf(\"sanitize %%s: failed\", %q)}}\n", qual, f.Key)
+				p("if v,ok:=any(&value).(interface{ValidateConfig()error});ok{if err:=v.ValidateConfig();err!=nil{return %sConfig{},fmt.Errorf(\"validate %%s: failed\", %q)}}\n", qual, f.Key)
+			} else {
+				p("if s,ok:=any(&value).(interface{SanitizeConfig()error});ok{if err:=s.SanitizeConfig();err!=nil{return %sConfig{},fmt.Errorf(\"sanitize %%s: %%w\", %q, err)}}\n", qual, f.Key)
+				p("if v,ok:=any(&value).(interface{ValidateConfig()error});ok{if err:=v.ValidateConfig();err!=nil{return %sConfig{},fmt.Errorf(\"validate %%s: %%w\", %q, err)}}\n", qual, f.Key)
+			}
+			p("c.%s=value\n", f.GoName)
 		} else {
 			p("value,err:=decodeRoot%s(ctx,r,e);if err!=nil{return %sConfig{},err}\n", f.GoName, qual)
 			if f.Sensitive {
@@ -793,7 +854,12 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 				p("%s.%s=%s.FieldProvider[%s](r,e,%q,%t)\n", dest, f.GoName, rtAlias, f.ResolvedGoType(), sec.Name+"."+f.Key, f.Sensitive)
 			} else {
 				ti, _ := ClassifyType(f.GoType)
-				p("value,err:=%s(ctx,r,e)\n", staticDecoderCall(staticDecoderName(sec.GoName, f.GoName), ti))
+				if f.Parser != "" {
+					symbol, _ := parserSymbol(f.Parser)
+					p("value,err:=%s(e,options.%s)\n", staticDecoderName(sec.GoName, f.GoName), symbol)
+				} else {
+					p("value,err:=%s(ctx,r,e)\n", staticDecoderCall(staticDecoderName(sec.GoName, f.GoName), ti))
+				}
 				p("if err!=nil{return %sConfig{},err}\n", qual)
 				if f.Sensitive {
 					p("if s,ok:=any(&value).(interface{SanitizeConfig()error});ok{if err:=s.SanitizeConfig();err!=nil{return %sConfig{},fmt.Errorf(\"sanitize %%s: failed\", %q)}}\n", qual, sec.Name+"."+f.Key)
@@ -876,7 +942,12 @@ func emitSectionStaticDecoders(p func(string, ...any), sec m.SectionDefinition, 
 		if err != nil {
 			return err
 		}
-		emitStaticDecoder(p, staticDecoderName(prefix, f.GoName), f.ResolvedGoType(), ti, rtAlias, path+"."+f.Key, f.Sensitive)
+		if f.Parser != "" {
+			symbol, _ := parserSymbol(f.Parser)
+			emitStaticParserDecoder(p, staticDecoderName(prefix, f.GoName), f.ResolvedGoType(), ti, symbol+"Func", rtAlias, path+"."+f.Key, f.Sensitive)
+		} else {
+			emitStaticDecoder(p, staticDecoderName(prefix, f.GoName), f.ResolvedGoType(), ti, rtAlias, path+"."+f.Key, f.Sensitive)
+		}
 	}
 	for _, child := range sec.Children {
 		if err := emitSectionStaticDecoders(p, child, prefix+child.GoName, path+"."+child.Name, rtAlias); err != nil {
@@ -932,6 +1003,9 @@ func emitSectionValueResolve(p func(string, ...any), sec m.SectionDefinition, se
 		p("if e!=nil{")
 		if f.Policy == m.ProviderBacked {
 			p("%s.%s=%s.FieldProvider[%s](r,e,%q,%t)\n", dest, f.GoName, rtAlias, f.ResolvedGoType(), path+"."+f.Key, f.Sensitive)
+		} else if f.Parser != "" {
+			symbol, _ := parserSymbol(f.Parser)
+			p("decoded,err:=decode%s%s(e,options.%s);if err!=nil{return %sConfig{},err};%s.%s=decoded\n", prefix, f.GoName, symbol, qual, dest, f.GoName)
 		} else {
 			p("decoded,err:=decode%s%s(ctx,r,e);if err!=nil{return %sConfig{},err}\n", prefix, f.GoName, qual)
 			if f.Sensitive {

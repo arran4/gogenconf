@@ -20,16 +20,22 @@ func GenerateAppAPI(s m.Schema, o Options) ([]byte, error) {
 func emitAppAPI(b *bytes.Buffer, s m.Schema, o Options, qual, rtAlias string) error {
 	p := func(f string, a ...any) { fmt.Fprintf(b, f, a...) }
 	configIdentity := strings.TrimSuffix(s.Identity, "-schema")
+	parsers, err := parserDefinitions(s)
+	if err != nil {
+		return err
+	}
 
 	p("// SchemaVersion is the current supported configuration version for this schema.\n")
 	p("const SchemaVersion = %d\n\n", s.Version)
 
 	p(`type LoadOptions struct {
+	decoderOptions
 	Registry   *%s.Registry
 	LookupEnv  %s.LookupEnv
 	Migrations *Migrations
 	Strict     bool
 	SkipEnrich bool
+	optionErr error
 }
 
 type LoadOption func(*LoadOptions)
@@ -67,9 +73,15 @@ func Load(ctx context.Context, d *%s.Document, opts ...LoadOption) (%sConfig, er
 	}
 	var options LoadOptions
 	for _, opt := range opts {
+		if opt == nil {
+			return %sConfig{}, fmt.Errorf("nil load option")
+		}
 		opt(&options)
 	}
 	working := d.Clone()
+	if options.optionErr != nil {
+		return %sConfig{}, options.optionErr
+	}
 	if options.Migrations != nil {
 		if err := options.Migrations.Apply(working, SchemaVersion); err != nil {
 			return %sConfig{}, fmt.Errorf("migration failed: %%w", err)
@@ -95,7 +107,7 @@ func Load(ctx context.Context, d *%s.Document, opts ...LoadOption) (%sConfig, er
 	if lookup == nil {
 		lookup = os.LookupEnv
 	}
-	cfg, err := Resolve(ctx, working, r, lookup)
+	cfg, err := resolveWithOptions(ctx, working, r, lookup, options.decoderOptions)
 	if err != nil {
 		return %sConfig{}, err
 	}
@@ -163,7 +175,13 @@ func Seed() *%s.Document {
 	_ = Enrich(d)
 	return d
 }
-`, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, qual, qual, qual, qual, qual, rtAlias, qual, qual, qual, rtAlias, rtAlias, qual, qual, qual, rtAlias, qual, qual, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias)
+`, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, qual, qual, qual, qual, qual, qual, qual, rtAlias, qual, qual, qual, rtAlias, rtAlias, qual, qual, qual, rtAlias, qual, qual, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias, rtAlias)
+
+	for _, parser := range parsers {
+		field := strings.ToLower(parser.Symbol[:1]) + parser.Symbol[1:]
+		p("// With%s supplies the application-approved implementation for schema parser %q.\n", parser.Symbol, parser.Name)
+		p("func With%s(parse %sFunc) LoadOption { return func(o *LoadOptions) { if parse==nil { o.optionErr=fmt.Errorf(%q); return }; if o.%sSet { o.optionErr=fmt.Errorf(%q); return }; o.%s=parse; o.%sSet=true } }\n", parser.Symbol, parser.Symbol, "nil parser "+parser.Name, field, "duplicate parser "+parser.Name, parser.Symbol, field)
+	}
 
 	// Enrich function
 	p(`// Enrich idempotently adds missing default fields and sections to d,
