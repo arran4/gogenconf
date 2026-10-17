@@ -4,7 +4,7 @@ This directory contains an isolated, hermetic snapshot of `arran4/gogenconf` at 
 
 ## Provenance & Purpose
 
-- **Pinned Commit:** `d000175b840edf42166bf2f441b7dbce3153a7de` (branch `main`, commit immediately preceding PR #51 / Issue #49).
+- **Pinned Commit:** `d000175b840edf42166bf2f441b7dbce3153a7de` (PR #47 head / `lane-c/schema-docs`, commit immediately preceding PR #51 / Issue #49; `repo/document.go` formatted with `gofmt`).
 - **Origin:** Upstream repository `github.com/arran4/gogenconf`.
 - **License:** Apache License 2.0 (identical to parent repository `arran4/gogenconf`).
 - **Purpose:** Serves as a hermetic, immutable baseline for:

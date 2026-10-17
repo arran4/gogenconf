@@ -206,6 +206,9 @@ func Validate(s m.Schema) error {
 			return err
 		}
 	}
+	if _, err := parserDefinitions(s); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -712,7 +715,7 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 	p("var ErrInvalidDefault=errors.New(\"invalid generated default\")\nfunc defaultValueError(path string,sensitive bool,err error)error{if sensitive{return fmt.Errorf(\"default %%s: %%w\",path,ErrInvalidDefault)};return fmt.Errorf(\"default %%s: %%w\",path,err)}\n")
 	p("// Defaults returns concrete static defaults and optional legacy environment overrides.\n// Invalid static or environment values are errors; they are never treated as omission.\nfunc Defaults(lookup %s.LookupEnv) (%sConfig,error) { var c %sConfig\n", rtAlias, qual, qual)
 	for _, f := range s.RootFields {
-		if f.InputOnly || f.RuntimeOnly || f.Policy == m.ProviderBacked {
+		if f.InputOnly || f.RuntimeOnly || f.Policy == m.ProviderBacked || f.Parser != "" {
 			continue
 		}
 		dest := "c." + f.GoName
@@ -743,7 +746,7 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 			continue
 		}
 		for _, f := range sec.Fields {
-			if f.InputOnly || f.RuntimeOnly || f.Policy == m.ProviderBacked {
+			if f.InputOnly || f.RuntimeOnly || f.Policy == m.ProviderBacked || f.Parser != "" {
 				continue
 			}
 			dest := "c." + sec.GoName + "." + f.GoName

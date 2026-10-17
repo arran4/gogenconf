@@ -25,6 +25,7 @@ func parserDefinitions(s m.Schema) ([]parserDefinition, error) {
 			return err
 		}
 		goType, _ := m.ParseType(f.GoType)
+		goType = strings.TrimLeft(goType, "*")
 		def := parserDefinition{Name: f.Parser, Symbol: symbol, GoType: goType}
 		if previous, ok := seen[symbol]; ok {
 			if previous.Name != def.Name || previous.GoType != def.GoType {

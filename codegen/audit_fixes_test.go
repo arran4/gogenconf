@@ -737,3 +737,211 @@ func main() {
 		t.Fatalf("Audit F-06 (Part C) regression failed: %v\n%s", err, out)
 	}
 }
+
+// F-03 (Part A): Pointer custom-parser fields (*RuleStruct, []*RuleStruct, map[string]*RuleStruct)
+// generate valid Go code that compiles cleanly and decodes values.
+func TestAudit_F03A_PointerCustomParserCompilation(t *testing.T) {
+	s := m.Schema{
+		Version: 1,
+		RootFields: []m.Field{
+			{Key: "ptr_rule", GoName: "PtrRule", GoType: "*RuleStruct", Parser: "rule_parser"},
+		},
+	}
+	runtime, err := codegen.GenerateRuntime(codegen.RuntimeOptions{
+		Package:      "nativeconfig",
+		Capabilities: codegen.FullRuntimeCapabilities(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	generated, err := codegen.GenerateAppAPI(s, codegen.Options{
+		Package:       "appconfig",
+		RuntimeImport: "example.test/audit_f03a/nativeconfig",
+	})
+	if err != nil {
+		t.Fatalf("GenerateAppAPI failed: %v", err)
+	}
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.test/audit_f03a\n\ngo 1.25.0\n"), 0644)
+	if err := runtime.WriteToDir(filepath.Join(dir, "nativeconfig")); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.MkdirAll(filepath.Join(dir, "appconfig"), 0755)
+	_ = os.WriteFile(filepath.Join(dir, "appconfig", "config_generated.go"), generated, 0644)
+	_ = os.WriteFile(filepath.Join(dir, "appconfig", "ext.go"), []byte(`package appconfig
+import "example.test/audit_f03a/nativeconfig"
+type RuleStruct struct{ Raw string }
+func ParseRule(raw string, span nativeconfig.Span) (RuleStruct, error) {
+	return RuleStruct{Raw: raw}, nil
+}
+`), 0644)
+
+	const mainSrc = `package main
+import (
+	"context"
+	"fmt"
+	"example.test/audit_f03a/appconfig"
+)
+func main() {
+	opt := appconfig.WithRuleParser(appconfig.ParseRule)
+	input := []byte("config for generated version 1\n\nptr_rule RuleParser(\"hello\")\n")
+	cfg, _, err := appconfig.LoadBytes(context.Background(), input, opt)
+	if err != nil {
+		panic(err)
+	}
+	if cfg.PtrRule == nil || cfg.PtrRule.Raw != "hello" {
+		panic(fmt.Sprintf("unexpected PtrRule: %+v", cfg.PtrRule))
+	}
+}
+`
+	_ = os.WriteFile(filepath.Join(dir, "main.go"), []byte(mainSrc), 0644)
+	cmd := exec.Command("go", "run", ".")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("Audit F-03 (Part A) regression failed: %v\n%s", err, out)
+	}
+}
+
+// F-05 (Part B): FormatSchema preserves Parser on nested child section fields.
+func TestAudit_F05B_NestedChildSectionParserRoundTrip(t *testing.T) {
+	s := m.Schema{
+		Identity: "roundtrip-schema",
+		Version:  1,
+		Sections: []m.SectionDefinition{{
+			Name:   "parent",
+			GoName: "Parent",
+			GoType: "ParentConfig",
+			Children: []m.SectionDefinition{{
+				Name:   "child",
+				GoName: "Child",
+				GoType: "ChildConfig",
+				Fields: []m.Field{{
+					Key:    "rule",
+					GoName: "Rule",
+					GoType: "RuleExpr",
+					Parser: "custom_rule_parser",
+				}},
+			}},
+		}},
+	}
+	formatted := m.FormatSchema("roundtrip", &s)
+	parsed, err := m.ParseSchema(strings.NewReader(formatted))
+	if err != nil {
+		t.Fatalf("ParseSchema failed: %v\nFormatted:\n%s", err, formatted)
+	}
+	if len(parsed.Sections) != 1 || len(parsed.Sections[0].Children) != 1 || len(parsed.Sections[0].Children[0].Fields) != 1 {
+		t.Fatalf("unexpected parsed schema structure: %+v", parsed)
+	}
+	if got := parsed.Sections[0].Children[0].Fields[0].Parser; got != "custom_rule_parser" {
+		t.Fatalf("F-05B regression: nested child field Parser lost: got %q, want %q", got, "custom_rule_parser")
+	}
+}
+
+// F-06 (Part A): codegen.Validate validates parser symbols on child section fields.
+func TestAudit_F06A_NestedParserValidation(t *testing.T) {
+	s := m.Schema{
+		Version: 1,
+		Sections: []m.SectionDefinition{{
+			Name:   "parent",
+			GoName: "Parent",
+			GoType: "ParentConfig",
+			Children: []m.SectionDefinition{{
+				Name:   "child",
+				GoName: "Child",
+				GoType: "ChildConfig",
+				Fields: []m.Field{{
+					Key:    "rule",
+					GoName: "Rule",
+					GoType: "string",
+					Parser: "!!!", // invalid symbol (no usable Go identifier)
+				}},
+			}},
+		}},
+	}
+	if err := codegen.Validate(s); err == nil {
+		t.Fatal("expected codegen.Validate to reject invalid parser symbol in child section, got nil")
+	}
+}
+
+// F-06 (Part B): emitStaticParserDecoder passes unquoted raw strings to custom parsers
+// when multi-word quoted literals are authored or provided.
+func TestAudit_F06B_MultiWordLiteralPassedWithoutOuterQuotes(t *testing.T) {
+	s := m.Schema{
+		Version: 1,
+		RootFields: []m.Field{
+			{Key: "expression", GoName: "Expression", GoType: "FilterExpr", Parser: "filter_parser"},
+		},
+	}
+	runtime, err := codegen.GenerateRuntime(codegen.RuntimeOptions{
+		Package:      "nativeconfig",
+		Capabilities: codegen.FullRuntimeCapabilities(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	generated, err := codegen.GenerateAppAPI(s, codegen.Options{
+		Package:       "appconfig",
+		RuntimeImport: "example.test/audit_f06b/nativeconfig",
+	})
+	if err != nil {
+		t.Fatalf("GenerateAppAPI failed: %v", err)
+	}
+	dir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.test/audit_f06b\n\ngo 1.25.0\n"), 0644)
+	if err := runtime.WriteToDir(filepath.Join(dir, "nativeconfig")); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.MkdirAll(filepath.Join(dir, "appconfig"), 0755)
+	_ = os.WriteFile(filepath.Join(dir, "appconfig", "config_generated.go"), generated, 0644)
+	_ = os.WriteFile(filepath.Join(dir, "appconfig", "ext.go"), []byte(`package appconfig
+import (
+	"fmt"
+	"strings"
+	"example.test/audit_f06b/nativeconfig"
+)
+type FilterExpr string
+func ParseFilter(raw string, span nativeconfig.Span) (FilterExpr, error) {
+	if strings.HasPrefix(raw, "\"") || strings.HasSuffix(raw, "\"") {
+		return "", fmt.Errorf("unexpected outer quotes in raw string: %q", raw)
+	}
+	return FilterExpr(raw), nil
+}
+`), 0644)
+
+	const mainSrc = `package main
+import (
+	"context"
+	"example.test/audit_f06b/appconfig"
+)
+func main() {
+	opt := appconfig.WithFilterParser(appconfig.ParseFilter)
+	// Quoted multi-word literal expression:
+	input := []byte("config for generated version 1\n\nexpression FilterParser(\"4 > a && b <= 9\")\n")
+	cfg, _, err := appconfig.LoadBytes(context.Background(), input, opt)
+	if err != nil {
+		panic(err)
+	}
+	if string(cfg.Expression) != "4 > a && b <= 9" {
+		panic("unexpected expression: " + string(cfg.Expression))
+	}
+
+	// Plain literal without Call wrapper:
+	inputPlain := []byte("config for generated version 1\n\nexpression \"4 > a && b <= 9\"\n")
+	cfgPlain, _, err := appconfig.LoadBytes(context.Background(), inputPlain, opt)
+	if err != nil {
+		panic(err)
+	}
+	if string(cfgPlain.Expression) != "4 > a && b <= 9" {
+		panic("unexpected expression: " + string(cfgPlain.Expression))
+	}
+}
+`
+	_ = os.WriteFile(filepath.Join(dir, "main.go"), []byte(mainSrc), 0644)
+	cmd := exec.Command("go", "run", ".")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("Audit F-06 (Part B) regression failed: %v\n%s", err, out)
+	}
+}

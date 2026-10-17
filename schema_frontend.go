@@ -701,6 +701,9 @@ func formatSchemaSection(b *strings.Builder, sec SectionDefinition, indent strin
 		if f.EnvironmentNonEmpty {
 			fmt.Fprintf(b, "%senv_non_empty true\n", fieldIndent)
 		}
+		if f.Parser != "" {
+			fmt.Fprintf(b, "%sparser %s\n", fieldIndent, FormatExpr(Literal{Value: f.Parser}))
+		}
 		fmt.Fprintf(b, "%send\n", inner)
 	}
 	for _, child := range sec.Children {
