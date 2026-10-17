@@ -145,6 +145,9 @@ func keyedElementType(goType string) (string, bool) {
 
 // ValidateTypeDefault checks that a literal default matches the syntax expected by the type.
 func ValidateTypeDefault(ti TypeInfo, val string) error {
+	if ti.IsMap {
+		return fmt.Errorf("literal default is unsupported for map fields")
+	}
 	if ti.IsSlice {
 		if val == "" {
 			return nil

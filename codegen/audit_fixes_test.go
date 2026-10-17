@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	m "github.com/arran4/gogenconf"
@@ -197,14 +198,38 @@ func main() {
 	}
 }
 
-// F-03 (Part B): Map fields with Environment fallbacks and slice of pointer defaults compile cleanly and execute.
-func TestAudit_F03_MapEnvAndSliceDefaultsCompilation(t *testing.T) {
+// F-03 (Part B): Map defaults, pointer-slice defaults compile cleanly and execute correctly.
+func TestAudit_F03_MapDefaultsAndPointerSliceCompilation(t *testing.T) {
 	s := m.Schema{
 		Version: 1,
 		RootFields: []m.Field{
-			{Key: "labels", GoName: "Labels", GoType: "map[string]string", Environment: "APP_LABELS"},
-			{Key: "counts", GoName: "Counts", GoType: "[]int", Default: m.Literal{Value: "1,2,3"}},
+			{Key: "labels", GoName: "Labels", GoType: "map[string]string", Default: m.Map{
+				Entries: []m.MapEntry{
+					{Key: "env", Value: m.Literal{Value: "production"}},
+					{Key: "region", Value: m.Literal{Value: "us-east-1"}},
+				},
+			}},
+			{Key: "routes", GoName: "Routes", GoType: "[$]int", Default: m.Map{
+				Entries: []m.MapEntry{
+					{Key: "http", Value: m.Literal{Value: "80"}},
+					{Key: "https", Value: m.Literal{Value: "443"}},
+				},
+			}},
+			{Key: "counts", GoName: "Counts", GoType: "[]*int", Default: m.Literal{Value: "1,2,3"}},
+			{Key: "tags", GoName: "Tags", GoType: "[]*string", Default: m.Literal{Value: "alpha,beta"}},
 		},
+		Sections: []m.SectionDefinition{{
+			Name:   "service",
+			GoName: "Service",
+			GoType: "ServiceConfig",
+			Fields: []m.Field{
+				{Key: "metadata", GoName: "Metadata", GoType: "map[string]string", Default: m.Map{
+					Entries: []m.MapEntry{
+						{Key: "tier", Value: m.Literal{Value: "backend"}},
+					},
+				}},
+			},
+		}},
 	}
 	runtime, err := codegen.GenerateRuntime(codegen.RuntimeOptions{
 		Package:      "nativeconfig",
@@ -231,6 +256,7 @@ func TestAudit_F03_MapEnvAndSliceDefaultsCompilation(t *testing.T) {
 	const mainSrc = `package main
 
 import (
+	"context"
 	"fmt"
 	"example.test/audit_f03/appconfig"
 )
@@ -240,8 +266,40 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	if len(defaults.Counts) != 3 || defaults.Counts[0] != 1 || defaults.Counts[2] != 3 {
-		panic(fmt.Sprintf("unexpected defaults: %+v", defaults))
+	// Verify pointer-slice int defaults
+	if len(defaults.Counts) != 3 || defaults.Counts[0] == nil || *defaults.Counts[0] != 1 || defaults.Counts[2] == nil || *defaults.Counts[2] != 3 {
+		panic(fmt.Sprintf("unexpected counts defaults: %+v", defaults.Counts))
+	}
+	if defaults.Counts[0] == defaults.Counts[1] || defaults.Counts[1] == defaults.Counts[2] {
+		panic("pointer slice elements must not share identical pointer addresses")
+	}
+
+	// Verify pointer-slice string defaults
+	if len(defaults.Tags) != 2 || defaults.Tags[0] == nil || *defaults.Tags[0] != "alpha" || defaults.Tags[1] == nil || *defaults.Tags[1] != "beta" {
+		panic(fmt.Sprintf("unexpected tags defaults: %+v", defaults.Tags))
+	}
+	if defaults.Tags[0] == defaults.Tags[1] {
+		panic("string pointer slice elements must not share identical pointer addresses")
+	}
+
+	// Verify map defaults in root and sections
+	if defaults.Labels == nil || defaults.Labels["env"] != "production" || defaults.Labels["region"] != "us-east-1" {
+		panic(fmt.Sprintf("unexpected labels map default: %+v", defaults.Labels))
+	}
+	if defaults.Routes == nil || defaults.Routes["http"] != 80 || defaults.Routes["https"] != 443 {
+		panic(fmt.Sprintf("unexpected routes map default: %+v", defaults.Routes))
+	}
+	if defaults.Service.Metadata == nil || defaults.Service.Metadata["tier"] != "backend" {
+		panic(fmt.Sprintf("unexpected service.metadata default: %+v", defaults.Service.Metadata))
+	}
+
+	// Verify parity with Load(Seed())
+	loaded, err := appconfig.Load(context.Background(), appconfig.Seed())
+	if err != nil {
+		panic(err)
+	}
+	if loaded.Labels["env"] != "production" || loaded.Routes["http"] != 80 || loaded.Service.Metadata["tier"] != "backend" {
+		panic("Seed/Load parity failure for map defaults")
 	}
 }
 `
@@ -251,6 +309,136 @@ func main() {
 	cmd.Env = append(os.Environ(), "GOWORK=off")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("Audit F-03 regression failed: %v\n%s", err, out)
+	}
+}
+
+// F-03: Unsupported map environment fallbacks and literal defaults must fail early and explicitly during validation.
+func TestAudit_F03_MapEnvironmentFallbackRejected(t *testing.T) {
+	testCases := []struct {
+		name    string
+		schema  m.Schema
+		wantErr string
+	}{
+		{
+			name: "root map[string]string with environment",
+			schema: m.Schema{
+				Version: 1,
+				RootFields: []m.Field{
+					{Key: "labels", GoName: "Labels", GoType: "map[string]string", Environment: "APP_LABELS"},
+				},
+			},
+			wantErr: "root.labels: environment fallback is unsupported for map fields",
+		},
+		{
+			name: "root [$]string with environment",
+			schema: m.Schema{
+				Version: 1,
+				RootFields: []m.Field{
+					{Key: "routes", GoName: "Routes", GoType: "[$]string", Environment: "APP_ROUTES"},
+				},
+			},
+			wantErr: "root.routes: environment fallback is unsupported for map fields",
+		},
+		{
+			name: "root map with environment_non_empty",
+			schema: m.Schema{
+				Version: 1,
+				RootFields: []m.Field{
+					{Key: "labels", GoName: "Labels", GoType: "map[string]string", EnvironmentNonEmpty: true},
+				},
+			},
+			wantErr: "root.labels: environment fallback is unsupported for map fields",
+		},
+		{
+			name: "section map[string]string with environment",
+			schema: m.Schema{
+				Version: 1,
+				Sections: []m.SectionDefinition{{
+					Name:   "service",
+					GoName: "Service",
+					GoType: "ServiceConfig",
+					Fields: []m.Field{
+						{Key: "tags", GoName: "Tags", GoType: "map[string]string", Environment: "SVC_TAGS"},
+					},
+				}},
+			},
+			wantErr: "service.tags: environment fallback is unsupported for map fields",
+		},
+		{
+			name: "section [$]int with environment",
+			schema: m.Schema{
+				Version: 1,
+				Sections: []m.SectionDefinition{{
+					Name:   "service",
+					GoName: "Service",
+					GoType: "ServiceConfig",
+					Fields: []m.Field{
+						{Key: "ports", GoName: "Ports", GoType: "[$]int", Environment: "SVC_PORTS"},
+					},
+				}},
+			},
+			wantErr: "service.ports: environment fallback is unsupported for map fields",
+		},
+		{
+			name: "nested child section map with environment",
+			schema: m.Schema{
+				Version: 1,
+				Sections: []m.SectionDefinition{{
+					Name:   "service",
+					GoName: "Service",
+					GoType: "ServiceConfig",
+					Children: []m.SectionDefinition{{
+						Name:   "cluster",
+						GoName: "Cluster",
+						GoType: "ClusterConfig",
+						Fields: []m.Field{
+							{Key: "nodes", GoName: "Nodes", GoType: "map[string]string", Environment: "CLUSTER_NODES"},
+						},
+					}},
+				}},
+			},
+			wantErr: "service.cluster.nodes: environment fallback is unsupported for map fields",
+		},
+		{
+			name: "root map with literal default",
+			schema: m.Schema{
+				Version: 1,
+				RootFields: []m.Field{
+					{Key: "labels", GoName: "Labels", GoType: "map[string]string", Default: m.Literal{Value: "foo=bar"}},
+				},
+			},
+			wantErr: "root.labels: literal or non-map default is unsupported for map fields",
+		},
+		{
+			name: "section map with literal default",
+			schema: m.Schema{
+				Version: 1,
+				Sections: []m.SectionDefinition{{
+					Name:   "service",
+					GoName: "Service",
+					GoType: "ServiceConfig",
+					Fields: []m.Field{
+						{Key: "labels", GoName: "Labels", GoType: "map[string]string", Default: m.Literal{Value: "foo=bar"}},
+					},
+				}},
+			},
+			wantErr: "service.labels: literal or non-map default is unsupported for map fields",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := codegen.GenerateAppAPI(tc.schema, codegen.Options{
+				Package:       "appconfig",
+				RuntimeImport: "example.test/reject/nativeconfig",
+			})
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+		})
 	}
 }
 

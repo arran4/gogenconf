@@ -76,6 +76,16 @@ func Validate(s m.Schema) error {
 		if err != nil {
 			return err
 		}
+		if ti.IsMap && (f.Environment != "" || f.EnvironmentNonEmpty) {
+			return fmt.Errorf("root.%s: environment fallback is unsupported for map fields", f.Key)
+		}
+		if ti.IsMap && f.Default != nil {
+			if _, isMap := f.Default.(m.Map); !isMap {
+				if pMap, ok := f.Default.(*m.Map); !ok || pMap == nil {
+					return fmt.Errorf("root.%s: literal or non-map default is unsupported for map fields", f.Key)
+				}
+			}
+		}
 		if f.Default != nil {
 			if lit, ok := f.Default.(m.Literal); ok {
 				if err := ValidateTypeDefault(ti, lit.Value); err != nil {
@@ -147,6 +157,16 @@ func Validate(s m.Schema) error {
 			ti, err := ClassifyType(f.GoType)
 			if err != nil {
 				return err
+			}
+			if ti.IsMap && (f.Environment != "" || f.EnvironmentNonEmpty) {
+				return fmt.Errorf("%s.%s: environment fallback is unsupported for map fields", sec.Name, f.Key)
+			}
+			if ti.IsMap && f.Default != nil {
+				if _, isMap := f.Default.(m.Map); !isMap {
+					if pMap, ok := f.Default.(*m.Map); !ok || pMap == nil {
+						return fmt.Errorf("%s.%s: literal or non-map default is unsupported for map fields", sec.Name, f.Key)
+					}
+				}
 			}
 			if f.Default != nil {
 				if lit, ok := f.Default.(m.Literal); ok {
@@ -231,6 +251,16 @@ func validateChildDefinitions(parent m.SectionDefinition, path string, typesSeen
 			if err != nil {
 				return err
 			}
+			if ti.IsMap && (f.Environment != "" || f.EnvironmentNonEmpty) {
+				return fmt.Errorf("%s.%s: environment fallback is unsupported for map fields", childPath, f.Key)
+			}
+			if ti.IsMap && f.Default != nil {
+				if _, isMap := f.Default.(m.Map); !isMap {
+					if pMap, ok := f.Default.(*m.Map); !ok || pMap == nil {
+						return fmt.Errorf("%s.%s: literal or non-map default is unsupported for map fields", childPath, f.Key)
+					}
+				}
+			}
 			if f.Default != nil {
 				if lit, ok := f.Default.(m.Literal); ok {
 					if err := ValidateTypeDefault(ti, lit.Value); err != nil {
@@ -288,9 +318,9 @@ func emitTypedDefaultValueBody(p func(string, ...any), dest string, ti TypeInfo,
 		valueType := ti.ElemType
 		valueInfo := ti
 		valueInfo.GoType, valueInfo.IsPtr = valueType, false
-		p("var defaultValue %s;", valueType)
-		emitTypedDefaultValueBody(p, "defaultValue", valueInfo, raw, path, sensitive)
-		p("%s=&defaultValue;", dest)
+		p("var ptrVal %s;", valueType)
+		emitTypedDefaultValueBody(p, "ptrVal", valueInfo, raw, path, sensitive)
+		p("%s=&ptrVal;", dest)
 		return
 	}
 	if ti.IsSlice {
@@ -299,9 +329,9 @@ func emitTypedDefaultValueBody(p func(string, ...any), dest string, ti TypeInfo,
 		if ti.Element != nil {
 			itemInfo = *ti.Element
 		}
-		p("defaultItems:=strings.Split(%s,\",\");%s=make(%s,0,len(defaultItems));for _,defaultItem:=range defaultItems{var defaultValue %s;", raw, dest, ti.GoType, ti.ElemType)
-		emitTypedDefaultValueBody(p, "defaultValue", itemInfo, "defaultItem", path, sensitive)
-		p("%s=append(%s,defaultValue)};", dest, dest)
+		p("defaultItems:=strings.Split(%s,\",\");%s=make(%s,0,len(defaultItems));for _,defaultItem:=range defaultItems{var itemVal %s;", raw, dest, ti.GoType, ti.ElemType)
+		emitTypedDefaultValueBody(p, "itemVal", itemInfo, "defaultItem", path, sensitive)
+		p("%s=append(%s,itemVal)};", dest, dest)
 		return
 	}
 	switch ti.Kind {
@@ -321,6 +351,54 @@ func emitTypedDefaultValueBody(p func(string, ...any), dest string, ti TypeInfo,
 		p("parsed,err:=time.ParseDuration(%s);if err!=nil{return c,defaultValueError(%s,%s,err)};%s=parsed;", raw, pathLit, sensitiveLit, dest)
 	case TypeKindCustom:
 		p("if dec,ok:=any(&%s).(interface{DecodeConfig(string)error});ok{if err:=dec.DecodeConfig(%s);err!=nil{return c,defaultValueError(%s,%s,err)}}else if dec,ok:=any(&%s).(interface{UnmarshalText([]byte)error});ok{if err:=dec.UnmarshalText([]byte(%s));err!=nil{return c,defaultValueError(%s,%s,err)}}else{return c,fmt.Errorf(\"default %%s: unsupported custom decoder\",%s)};", dest, raw, pathLit, sensitiveLit, dest, raw, pathLit, sensitiveLit, pathLit)
+	}
+}
+
+func mapEntryRawValue(e m.Expr) (string, bool) {
+	switch v := e.(type) {
+	case m.Literal:
+		return strconv.Quote(v.Value), true
+	case *m.Literal:
+		if v != nil {
+			return strconv.Quote(v.Value), true
+		}
+	case m.List:
+		parts := make([]string, 0, len(v.Items))
+		for _, item := range v.Items {
+			if lit, ok := item.(m.Literal); ok {
+				parts = append(parts, lit.Value)
+			} else if lit, ok := item.(*m.Literal); ok && lit != nil {
+				parts = append(parts, lit.Value)
+			} else {
+				return "", false
+			}
+		}
+		return strconv.Quote(strings.Join(parts, ",")), true
+	case *m.List:
+		if v != nil {
+			return mapEntryRawValue(*v)
+		}
+	}
+	return "", false
+}
+
+func emitMapDefaultValue(p func(string, ...any), dest string, ti TypeInfo, mp m.Map, path string, sensitive bool) {
+	elemInfo := ti
+	if ti.Element != nil {
+		elemInfo = *ti.Element
+	} else {
+		elemInfo.GoType, elemInfo.IsSlice, elemInfo.IsMap = ti.ElemType, false, false
+	}
+	p("%s=make(%s,%d)\n", dest, ti.GoType, len(mp.Entries))
+	for _, entry := range mp.Entries {
+		entryPath := path + "." + entry.Key
+		if raw, ok := mapEntryRawValue(entry.Value); ok {
+			p("{\n")
+			p("var elemVal %s;\n", ti.ElemType)
+			emitTypedDefaultValueBody(p, "elemVal", elemInfo, raw, entryPath, sensitive)
+			p("%s[%q]=elemVal;\n", dest, entry.Key)
+			p("}\n")
+		}
 	}
 }
 
@@ -480,12 +558,18 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 		if f.InputOnly || f.RuntimeOnly || f.Policy == m.ProviderBacked {
 			continue
 		}
+		dest := "c." + f.GoName
 		ti, _ := ClassifyType(f.GoType)
 		if ti.IsMap {
+			if mp, ok := f.Default.(m.Map); ok {
+				emitMapDefaultValue(p, dest, ti, mp, f.Key, f.Sensitive)
+			} else if mp, ok := f.Default.(*m.Map); ok && mp != nil {
+				emitMapDefaultValue(p, dest, ti, *mp, f.Key, f.Sensitive)
+			}
 			continue
 		}
 		if v, ok := f.Default.(m.Literal); ok {
-			emitTypedDefaultValue(p, "c."+f.GoName, ti, strconv.Quote(v.Value), f.Key, f.Sensitive)
+			emitTypedDefaultValue(p, dest, ti, strconv.Quote(v.Value), f.Key, f.Sensitive)
 		}
 		if f.Environment != "" {
 			p("if lookup!=nil{if v,ok:=lookup(%q);ok", f.Environment)
@@ -493,7 +577,7 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 				p("&&v!=\"\"")
 			}
 			p("{")
-			emitTypedDefaultValueBody(p, "c."+f.GoName, ti, "v", f.Key, f.Sensitive)
+			emitTypedDefaultValueBody(p, dest, ti, "v", f.Key, f.Sensitive)
 			p("}}\n")
 		}
 	}
@@ -508,6 +592,11 @@ func generate(s m.Schema, o Options, model, binder bool) ([]byte, error) {
 			dest := "c." + sec.GoName + "." + f.GoName
 			ti, _ := ClassifyType(f.GoType)
 			if ti.IsMap {
+				if mp, ok := f.Default.(m.Map); ok {
+					emitMapDefaultValue(p, dest, ti, mp, sec.Name+"."+f.Key, f.Sensitive)
+				} else if mp, ok := f.Default.(*m.Map); ok && mp != nil {
+					emitMapDefaultValue(p, dest, ti, *mp, sec.Name+"."+f.Key, f.Sensitive)
+				}
 				continue
 			}
 			if v, ok := f.Default.(m.Literal); ok {
